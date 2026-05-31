@@ -98,6 +98,10 @@ Use this when the call is expected to fail.
 `executeFullQuery(query)`::
 Returns the raw JSON response body as a `String` without any field extraction.
 
+`executeFullQuery(query, variables, operationName)` / `executeQuery(query, variables, dataPath)`::
+Send a GraphQL request payload containing `query`, `variables`, and optionally `operationName`.
+Use the overload that also accepts `Map<String,String> headers` when a single request needs additional or overriding headers.
+
 `executeQueryOrPossibleSpecificError(query, Optional<dataPath>, Optional<expectedError>)`::
 Combines the happy-path and error-path into a single call.
 Returns a `com.snowedunderproductions.graphprobe.client.TestResponse` that carries either the extracted data or the error detail.
@@ -133,6 +137,13 @@ String error = client.executeErrorQuery(
     "mutation { createUser(name: \"\") { id } }"
 );
 assertThat(error).contains("Name must not be blank");
+
+// Execute a named operation with GraphQL variables
+String response = client.executeFullQuery(
+    "query UserById($id: ID!) { user(id: $id) { id name } }",
+    Map.of("id", "abc-123"),
+    "UserById"
+);
 ----
 
 TIP: Construct a single `SimpleGraphQLClient` instance per test class (or per suite) and share it.
@@ -173,12 +184,15 @@ Use it when the test project already runs a Spring application context and you w
 
 `simpleCall(query, jsonPath)`::
 Executes the query and returns the JsonPath-extracted value as a `String`.
+An overload accepts a `Map<String,String>` of per-request headers.
 
 `simpleJsonCall(query, jsonPath)`::
 As above, but returns the raw node as a JSON-string fragment.
+An overload accepts a `Map<String,String>` of per-request headers.
 
 `simpleErrorCall(...)`::
 Returns the first error message for a call expected to fail.
+An overload accepts a `Map<String,String>` of per-request headers.
 
 `simpleCallWithToken(query, token, apiGateway)`::
 Adds a bearer token and an API-gateway header to the request.
@@ -509,4 +523,3 @@ At each interval, the listener emits an INFO line containing:
 
 A final summary is logged when the test plan completes.
 These entries are sufficient to identify whether the pool is undersized for the degree of test parallelism in use, or whether a test is leaking connections (active count never returns to idle).
-

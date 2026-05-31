@@ -129,6 +129,7 @@ See the link:sample/README.md[`:sample` module] for a complete, offline-runnable
 == Code generation (query tests)
 
 GraphProbe now ships a dedicated `:codegen` module that can generate JUnit 5 test suites from GraphQL schemas.
+Query generation is enabled by default; mutation and subscription generation are opt in.
 
 [source,bash]
 ----
@@ -154,6 +155,7 @@ graphProbeCodegen {
     schemaFiles.from('src/main/resources/schema/schema.graphqls')
     basePackage = 'com.example.generated.graphprobe'
     testStyle = 'all'
+    operationTypes = ['query', 'mutation']
 
     fixtureMappings {
         operation('Query.user') {

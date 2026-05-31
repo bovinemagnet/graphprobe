@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Loads and merges GraphQL schema files, resolves the query root type, and
+ * Loads and merges GraphQL schema files, resolves operation root types, and
  * computes a stable change-detection hash for the source schemas.
  */
 final class SchemaLoader {
@@ -35,15 +35,25 @@ final class SchemaLoader {
 
     /** Resolves the query root type name, honouring an explicit {@code schema { query: ... }} block. */
     String resolveQueryRoot(TypeDefinitionRegistry registry) {
+        return resolveOperationRoot(registry, "query").orElse("Query");
+    }
+
+    /** Resolves the root type name for the requested operation type. */
+    Optional<String> resolveOperationRoot(TypeDefinitionRegistry registry, String operationType) {
         Optional<SchemaDefinition> schemaDefinition = registry.schemaDefinition();
         if (schemaDefinition.isPresent()) {
             for (OperationTypeDefinition operationTypeDefinition : schemaDefinition.get().getOperationTypeDefinitions()) {
-                if ("query".equals(operationTypeDefinition.getName())) {
-                    return operationTypeDefinition.getTypeName().getName();
+                if (operationType.equals(operationTypeDefinition.getName())) {
+                    return Optional.of(operationTypeDefinition.getTypeName().getName());
                 }
             }
         }
-        return "Query";
+        return switch (operationType) {
+            case "query" -> Optional.of("Query");
+            case "mutation" -> Optional.of("Mutation");
+            case "subscription" -> Optional.of("Subscription");
+            default -> Optional.empty();
+        };
     }
 
     String schemaHash(List<Path> schemaFiles) throws IOException {

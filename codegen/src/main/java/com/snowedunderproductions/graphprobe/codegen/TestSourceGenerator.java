@@ -12,7 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.Function;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -33,17 +33,19 @@ final class TestSourceGenerator {
      * directory (e.g. {@code GeneratedSchemaSmokeTest.java}, {@code providers/FooArgumentsProvider.java}).
      */
     Map<String, String> generate(CodegenConfig config, TypeDefinitionRegistry registry,
-                                 List<FieldDefinition> queryFields, Map<String, FieldDefinition> queryFieldsByName,
+                                 List<GeneratedOperation> operations,
+                                 Map<String, GeneratedOperation> operationsByName,
+                                 Map<String, GeneratedOperation> operationsByQualifiedName,
                                  String schemaHash) {
         String basePackage = config.getBasePackage();
         Map<String, String> sources = new LinkedHashMap<>();
 
         sources.put("GeneratedSchemaSmokeTest.java",
-            smokeTest(basePackage, schemaHash, queryFields, registry, config.getDgsCodegenPackage()));
+            smokeTest(basePackage, schemaHash, operations, registry, config.getDgsCodegenPackage()));
 
         if (styleEnabled(config.getTestStyle(), "property")) {
             sources.put("GeneratedPropertyTest.java",
-                propertyTest(basePackage, schemaHash, queryFields, registry));
+                propertyTest(basePackage, schemaHash, operations, registry));
         }
 
         if (styleEnabled(config.getTestStyle(), "fixture") && !config.getFixtureMappings().isEmpty()) {
@@ -52,11 +54,11 @@ final class TestSourceGenerator {
                 String operation = entry.getKey();
                 FixtureMapping mapping = entry.getValue();
                 String providerName = JavaNaming.providerName(operation);
-                FieldDefinition field = resolveOperationField(operation, queryFieldsByName);
+                GeneratedOperation generatedOperation = resolveOperation(operation, operationsByName, operationsByQualifiedName);
                 sources.put("providers/" + providerName + ".java",
                     provider(basePackage, schemaHash, providerName, operation, mapping));
                 fixtureBindings.add(new FixtureTestBinding(operation, providerName,
-                    new ArrayList<>(mapping.getArguments().keySet()), field));
+                    new ArrayList<>(mapping.getArguments().keySet()), generatedOperation));
             }
             sources.put("GeneratedFixtureBackedTest.java",
                 fixtureTest(basePackage, schemaHash, fixtureBindings, registry));
@@ -70,7 +72,7 @@ final class TestSourceGenerator {
         return "all".equals(resolved) || requested.equals(resolved);
     }
 
-    private String smokeTest(String basePackage, String schemaHash, List<FieldDefinition> operations, TypeDefinitionRegistry registry, String dgsCodegenPackage) {
+    private String smokeTest(String basePackage, String schemaHash, List<GeneratedOperation> operations, TypeDefinitionRegistry registry, String dgsCodegenPackage) {
         String methods = operations.stream()
             .map(op -> smokeMethod(op, registry, dgsCodegenPackage))
             .collect(Collectors.joining("\n\n"));
@@ -81,6 +83,9 @@ final class TestSourceGenerator {
             + "import com.fasterxml.jackson.databind.JsonNode;\n"
             + "import com.fasterxml.jackson.databind.ObjectMapper;\n"
             + "import com.snowedunderproductions.graphprobe.client.SimpleGraphQLClient;\n"
+            + "import java.util.LinkedHashMap;\n"
+            + "import java.util.List;\n"
+            + "import java.util.Map;\n"
             + "import org.junit.jupiter.api.Test;\n\n"
             + "class GeneratedSchemaSmokeTest {\n"
             + "    private static final SimpleGraphQLClient CLIENT = new SimpleGraphQLClient();\n"
@@ -90,26 +95,28 @@ final class TestSourceGenerator {
             + "}\n";
     }
 
-    private String smokeMethod(FieldDefinition operation, TypeDefinitionRegistry registry, String dgsCodegenPackage) {
-        String methodName = "smoke_" + JavaNaming.safeName(operation.getName());
-        String query = queryBuilder.operationQuery(operation, registry);
+    private String smokeMethod(GeneratedOperation operation, TypeDefinitionRegistry registry, String dgsCodegenPackage) {
+        String methodName = "smoke_" + JavaNaming.safeName(operation.operationType() + "_" + operation.fieldName());
+        String query = queryBuilder.operationDocument(operation, registry, argumentNames(operation.field()));
+        String operationName = queryBuilder.generatedOperationName(operation);
         String responseFieldExpression = dgsCodegenPackage == null || dgsCodegenPackage.isBlank()
-            ? "\"" + JavaNaming.javaString(operation.getName()) + "\""
-            : "dgsQueryField(\"" + JavaNaming.dgsConstantName(operation.getName()) + "\", \"" + JavaNaming.javaString(operation.getName()) + "\")";
+            ? "\"" + JavaNaming.javaString(operation.fieldName()) + "\""
+            : "dgsOperationField(\"" + operation.operationType().toUpperCase() + "\", \"" + JavaNaming.dgsConstantName(operation.fieldName()) + "\", \"" + JavaNaming.javaString(operation.fieldName()) + "\")";
         return "    @Test\n"
             + "    void " + methodName + "() throws Exception {\n"
             + "        String query = \"\"\"\n" + JavaNaming.indent(query, 8) + "\n        \"\"\";\n"
-            + "        String response = CLIENT.executeFullQuery(query);\n"
+            + sampleVariables(operation.field(), registry)
+            + "        String response = CLIENT.executeFullQuery(query, variables, \"" + operationName + "\");\n"
             + "        JsonNode root = MAPPER.readTree(response);\n"
             + "        assertThat(root.path(\"errors\").isMissingNode() || root.path(\"errors\").isNull() || root.path(\"errors\").isEmpty()).isTrue();\n"
             + "        assertThat(root.path(\"data\").path(" + responseFieldExpression + ").isMissingNode()).isFalse();\n"
             + "    }";
     }
 
-    private String propertyTest(String basePackage, String schemaHash, List<FieldDefinition> operations, TypeDefinitionRegistry registry) {
-        PropertyBinding binding = propertyBinding(operations, registry);
+    private String propertyTest(String basePackage, String schemaHash, List<GeneratedOperation> operations, TypeDefinitionRegistry registry) {
+        List<PropertyBinding> bindings = propertyBindings(operations, registry);
         String body;
-        if (binding == null) {
+        if (bindings.isEmpty()) {
             body = "    @GraphQLProperty(tries = 10)\n"
                 + "    void generatedStringArbitraryIsUsable(@ForAll(\"generatedString\") String value) {\n"
                 + "        assertThat(value).isNotNull();\n"
@@ -119,21 +126,9 @@ final class TestSourceGenerator {
                 + "        return GraphQLArbitraries.graphqlString();\n"
                 + "    }";
         } else {
-            String variableName = JavaNaming.safeName(binding.argument().getName());
-            String providerName = "generated" + JavaNaming.capitalize(variableName);
-            String queryExpression = queryBuilder.javaQueryExpression(
-                binding.operation(),
-                registry,
-                Map.of(binding.argument().getName(), queryBuilder.typedLiteralExpression(binding.argument().getType(), registry, variableName))
-            );
-            String arbitraryType = queryBuilder.arbitraryJavaType(binding.argument().getType(), registry);
-            body = "    @GraphQLProperty(tries = 20)\n"
-                + "    void property_" + JavaNaming.safeName(binding.operation().getName()) + "(@ForAll(\"" + providerName + "\") " + arbitraryType + " " + variableName + ") throws Exception {\n"
-                + "        String query = " + queryExpression + ";\n"
-                + "        String response = CLIENT.executeFullQuery(query);\n"
-                + "        assertThat(response).isNotBlank();\n"
-                + "    }\n\n"
-                + propertyProvider(providerName, binding.argument(), registry);
+            body = bindings.stream()
+                .map(binding -> propertyMethod(binding, registry) + "\n\n" + propertyProvider(propertyProviderName(binding), binding.argument(), registry))
+                .collect(Collectors.joining("\n\n"));
         }
 
         return "package " + basePackage + ";\n\n"
@@ -143,6 +138,8 @@ final class TestSourceGenerator {
             + "import com.snowedunderproductions.graphprobe.jqwik.annotations.GraphQLProperty;\n"
             + "import com.snowedunderproductions.graphprobe.jqwik.arbitraries.GraphQLArbitraries;\n"
             + "import com.snowedunderproductions.graphprobe.jqwik.arbitraries.GraphQLFuzzingArbitraries;\n"
+            + "import java.util.LinkedHashMap;\n"
+            + "import java.util.Map;\n"
             + "import net.jqwik.api.Arbitrary;\n"
             + "import net.jqwik.api.Arbitraries;\n"
             + "import net.jqwik.api.ForAll;\n"
@@ -150,8 +147,26 @@ final class TestSourceGenerator {
             + "class GeneratedPropertyTest {\n"
             + "    private static final SimpleGraphQLClient CLIENT = new SimpleGraphQLClient();\n\n"
             + body + "\n\n"
-            + graphQlLiteralHelpers()
             + "}\n";
+    }
+
+    private String propertyMethod(PropertyBinding binding, TypeDefinitionRegistry registry) {
+        GeneratedOperation operation = binding.operation();
+        InputValueDefinition argument = binding.argument();
+        String variableName = JavaNaming.safeName(argument.getName());
+        String providerName = propertyProviderName(binding);
+        String query = queryBuilder.operationDocument(operation, registry, Set.of(argument.getName()));
+        String operationName = queryBuilder.generatedOperationName(operation);
+        String arbitraryType = queryBuilder.arbitraryJavaType(argument.getType(), registry);
+        return "    @GraphQLProperty(tries = 20)\n"
+            + "    void property_" + JavaNaming.safeName(operation.operationType() + "_" + operation.fieldName() + "_" + argument.getName())
+            + "(@ForAll(\"" + providerName + "\") " + arbitraryType + " " + variableName + ") throws Exception {\n"
+            + "        String query = \"\"\"\n" + JavaNaming.indent(query, 8) + "\n        \"\"\";\n"
+            + "        Map<String, Object> variables = new LinkedHashMap<>();\n"
+            + "        variables.put(\"" + JavaNaming.javaString(argument.getName()) + "\", " + variableName + ");\n"
+            + "        String response = CLIENT.executeFullQuery(query, variables, \"" + operationName + "\");\n"
+            + "        assertThat(response).isNotBlank();\n"
+            + "    }";
     }
 
     private String provider(String basePackage, String schemaHash, String providerName, String operation, FixtureMapping mapping) {
@@ -195,15 +210,15 @@ final class TestSourceGenerator {
                 : binding.arguments().stream().map(arg -> "String " + JavaNaming.safeName(arg)).collect(Collectors.joining(", "));
 
             String opField = binding.operation().contains(".") ? binding.operation().substring(binding.operation().indexOf('.') + 1) : binding.operation();
-            Map<String, String> dynamicArguments = binding.arguments().stream()
-                .collect(Collectors.toMap(Function.identity(), arg -> queryBuilder.fixtureLiteralExpression(argumentType(binding.field(), arg), registry, JavaNaming.safeName(arg))));
-            String queryExpression = queryBuilder.javaQueryExpression(binding.field(), registry, dynamicArguments);
+            String query = queryBuilder.operationDocument(binding.operationDefinition(), registry, Set.copyOf(binding.arguments()));
+            String operationName = queryBuilder.generatedOperationName(binding.operationDefinition());
 
             return "    @ParameterizedTest\n"
                 + "    @DynamicSource(argumentsProvider = " + binding.providerName() + ".class)\n"
                 + "    void fixture_" + JavaNaming.safeName(opField) + "(" + args + ") throws Exception {\n"
-                + "        String query = " + queryExpression + ";\n"
-                + "        String response = CLIENT.executeFullQuery(query);\n"
+                + "        String query = \"\"\"\n" + JavaNaming.indent(query, 8) + "\n        \"\"\";\n"
+                + fixtureVariables(binding, registry)
+                + "        String response = CLIENT.executeFullQuery(query, variables, \"" + operationName + "\");\n"
                 + "        assertThat(response).isNotBlank();\n"
                 + "    }";
         }).collect(Collectors.joining("\n\n"));
@@ -218,23 +233,33 @@ final class TestSourceGenerator {
             + "import com.snowedunderproductions.graphprobe.annotations.DynamicSource;\n"
             + "import com.snowedunderproductions.graphprobe.client.SimpleGraphQLClient;\n"
             + providerImports
+            + "import java.util.LinkedHashMap;\n"
+            + "import java.util.Map;\n"
             + "import org.junit.jupiter.params.ParameterizedTest;\n\n"
             + "class GeneratedFixtureBackedTest {\n"
             + "    private static final SimpleGraphQLClient CLIENT = new SimpleGraphQLClient();\n\n"
             + methods + "\n"
-            + graphQlLiteralHelpers()
+            + variableConversionHelpers()
             + "}\n";
     }
 
-    private PropertyBinding propertyBinding(List<FieldDefinition> operations, TypeDefinitionRegistry registry) {
-        for (FieldDefinition operation : operations) {
-            for (InputValueDefinition argument : operation.getInputValueDefinitions()) {
+    private List<PropertyBinding> propertyBindings(List<GeneratedOperation> operations, TypeDefinitionRegistry registry) {
+        List<PropertyBinding> bindings = new ArrayList<>();
+        for (GeneratedOperation operation : operations) {
+            for (InputValueDefinition argument : operation.field().getInputValueDefinitions()) {
                 if (queryBuilder.isSupportedPropertyType(argument.getType(), registry)) {
-                    return new PropertyBinding(operation, argument);
+                    bindings.add(new PropertyBinding(operation, argument));
                 }
             }
         }
-        return null;
+        return bindings;
+    }
+
+    private String propertyProviderName(PropertyBinding binding) {
+        return "generated"
+            + JavaNaming.capitalize(JavaNaming.safeName(binding.operation().operationType()))
+            + JavaNaming.capitalize(JavaNaming.safeName(binding.operation().fieldName()))
+            + JavaNaming.capitalize(JavaNaming.safeName(binding.argument().getName()));
     }
 
     private String propertyProvider(String providerName, InputValueDefinition argument, TypeDefinitionRegistry registry) {
@@ -267,22 +292,27 @@ final class TestSourceGenerator {
             + "    }";
     }
 
-    private FieldDefinition resolveOperationField(String operation, Map<String, FieldDefinition> queryFieldsByName) {
+    private GeneratedOperation resolveOperation(String operation, Map<String, GeneratedOperation> operationsByName,
+                                                Map<String, GeneratedOperation> operationsByQualifiedName) {
+        GeneratedOperation qualified = operationsByQualifiedName.get(operation);
+        if (qualified != null) {
+            return qualified;
+        }
         String fieldName = operation.contains(".") ? operation.substring(operation.indexOf('.') + 1) : operation;
-        FieldDefinition field = queryFieldsByName.get(fieldName);
+        GeneratedOperation field = operationsByName.get(fieldName);
         if (field == null) {
             throw new IllegalArgumentException("Fixture mapping references unknown or excluded query operation: " + operation);
         }
         return field;
     }
 
-    private Type<?> argumentType(FieldDefinition field, String argumentName) {
-        return field.getInputValueDefinitions().stream()
+    private Type<?> argumentType(GeneratedOperation operation, String argumentName) {
+        return operation.field().getInputValueDefinitions().stream()
             .filter(argument -> argument.getName().equals(argumentName))
             .findFirst()
             .map(InputValueDefinition::getType)
             .orElseThrow(() -> new IllegalArgumentException(
-                "Fixture mapping references unknown argument '" + argumentName + "' for query operation '" + field.getName() + "'"
+                "Fixture mapping references unknown argument '" + argumentName + "' for operation '" + operation.qualifiedName() + "'"
             ));
     }
 
@@ -299,10 +329,10 @@ final class TestSourceGenerator {
             return "";
         }
         return "\n"
-            + "    private static String dgsQueryField(String constantName, String fallback) {\n"
+            + "    private static String dgsOperationField(String operationType, String constantName, String fallback) {\n"
             + "        try {\n"
-            + "            Class<?> queryConstants = Class.forName(\"" + JavaNaming.javaString(dgsCodegenPackage) + ".DgsConstants$QUERY\");\n"
-            + "            Object value = queryConstants.getField(constantName).get(null);\n"
+            + "            Class<?> operationConstants = Class.forName(\"" + JavaNaming.javaString(dgsCodegenPackage) + ".DgsConstants$\" + operationType);\n"
+            + "            Object value = operationConstants.getField(constantName).get(null);\n"
             + "            return value instanceof String stringValue ? stringValue : fallback;\n"
             + "        } catch (ReflectiveOperationException | LinkageError ignored) {\n"
             + "            return fallback;\n"
@@ -310,29 +340,59 @@ final class TestSourceGenerator {
             + "    }\n";
     }
 
-    private String graphQlLiteralHelpers() {
+    private Set<String> argumentNames(FieldDefinition field) {
+        return field.getInputValueDefinitions().stream()
+            .map(InputValueDefinition::getName)
+            .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
+    }
+
+    private String sampleVariables(FieldDefinition field, TypeDefinitionRegistry registry) {
+        StringBuilder source = new StringBuilder("        Map<String, Object> variables = new LinkedHashMap<>();\n");
+        for (InputValueDefinition argument : field.getInputValueDefinitions()) {
+            source.append("        variables.put(\"")
+                .append(JavaNaming.javaString(argument.getName()))
+                .append("\", ")
+                .append(queryBuilder.sampleVariableExpression(argument.getType(), registry))
+                .append(");\n");
+        }
+        return source.toString();
+    }
+
+    private String fixtureVariables(FixtureTestBinding binding, TypeDefinitionRegistry registry) {
+        StringBuilder source = new StringBuilder("        Map<String, Object> variables = new LinkedHashMap<>();\n");
+        for (String argument : binding.arguments()) {
+            source.append("        variables.put(\"")
+                .append(JavaNaming.javaString(argument))
+                .append("\", ")
+                .append(queryBuilder.fixtureVariableExpression(argumentType(binding.operationDefinition(), argument), registry, JavaNaming.safeName(argument)))
+                .append(");\n");
+        }
+        return source.toString();
+    }
+
+    private String variableConversionHelpers() {
         return "\n"
-            + "    private static String gqlString(String value) {\n"
+            + "    private static Integer integerVariable(String value) {\n"
             + "        if (value == null) {\n"
-            + "            return \"null\";\n"
+            + "            return null;\n"
             + "        }\n"
-            + "        return \"\\\"\" + value.replace(\"\\\\\", \"\\\\\\\\\").replace(\"\\\"\", \"\\\\\\\"\") + \"\\\"\";\n"
+            + "        return value.isBlank() ? null : Integer.valueOf(value);\n"
             + "    }\n\n"
-            + "    private static String gqlRaw(String value) {\n"
-            + "        return value == null || value.isBlank() ? \"null\" : value;\n"
+            + "    private static Double doubleVariable(String value) {\n"
+            + "        if (value == null) {\n"
+            + "            return null;\n"
+            + "        }\n"
+            + "        return value.isBlank() ? null : Double.valueOf(value);\n"
             + "    }\n\n"
-            + "    private static String gqlInt(Integer value) {\n"
-            + "        return value == null ? \"null\" : value.toString();\n"
-            + "    }\n\n"
-            + "    private static String gqlFloat(Double value) {\n"
-            + "        return value == null ? \"null\" : value.toString();\n"
-            + "    }\n\n"
-            + "    private static String gqlBoolean(Boolean value) {\n"
-            + "        return value == null ? \"null\" : value.toString();\n"
+            + "    private static Boolean booleanVariable(String value) {\n"
+            + "        if (value == null) {\n"
+            + "            return null;\n"
+            + "        }\n"
+            + "        return value.isBlank() ? null : Boolean.valueOf(value);\n"
             + "    }\n";
     }
 
-    private record FixtureTestBinding(String operation, String providerName, List<String> arguments, FieldDefinition field) { }
+    private record FixtureTestBinding(String operation, String providerName, List<String> arguments, GeneratedOperation operationDefinition) { }
 
-    private record PropertyBinding(FieldDefinition operation, InputValueDefinition argument) { }
+    private record PropertyBinding(GeneratedOperation operation, InputValueDefinition argument) { }
 }

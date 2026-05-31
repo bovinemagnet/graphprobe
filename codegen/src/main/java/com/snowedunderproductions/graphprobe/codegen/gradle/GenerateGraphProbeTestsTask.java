@@ -54,6 +54,9 @@ public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
     public abstract ListProperty<String> getOperationExcludePatterns();
 
     @Input
+    public abstract ListProperty<String> getOperationTypes();
+
+    @Input
     public abstract Property<String> getTestStyle();
 
     @InputFile
@@ -83,6 +86,7 @@ public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
         config.setMaxOperations(getMaxOperations().get());
         config.setOperationIncludePatterns(getOperationIncludePatterns().getOrElse(List.of()));
         config.setOperationExcludePatterns(getOperationExcludePatterns().getOrElse(List.of()));
+        config.setOperationTypes(getOperationTypes().getOrElse(List.of("query")));
         config.setTestStyle(getTestStyle().getOrElse("all"));
 
         Map<String, FixtureMapping> fixtureMappings = new LinkedHashMap<>();

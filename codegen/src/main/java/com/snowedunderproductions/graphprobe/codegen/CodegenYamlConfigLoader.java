@@ -43,6 +43,9 @@ public class CodegenYamlConfigLoader {
         if (yamlConfig.operationExcludePatterns != null) {
             config.setOperationExcludePatterns(yamlConfig.operationExcludePatterns);
         }
+        if (yamlConfig.operationTypes != null) {
+            config.setOperationTypes(yamlConfig.operationTypes);
+        }
         if (yamlConfig.maxOperations != null) {
             config.setMaxOperations(yamlConfig.maxOperations);
         }
@@ -64,6 +67,7 @@ public class CodegenYamlConfigLoader {
         public String persistentOutputDirectory;
         public Integer maxOperations;
         public String testStyle;
+        public List<String> operationTypes;
         public List<String> operationIncludePatterns = new ArrayList<>();
         public List<String> operationExcludePatterns = new ArrayList<>();
         public Map<String, FixtureMapping> fixtureMappings = new LinkedHashMap<>();

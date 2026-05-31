@@ -135,6 +135,21 @@ public class GraphQLTestClient {
     }
 
     /**
+     * Executes a GraphQL query with variables and returns the value found at the
+     * given JSONPath.
+     *
+     * @param query     the GraphQL query string to execute
+     * @param variables variables object sent in the GraphQL request payload
+     * @param dataPath  the JSONPath expression for the desired value
+     * @return the extracted value as a string, or {@code null} if the path resolves to nothing
+     * @throws IOException if the HTTP exchange fails or the response contains an error
+     */
+    public String executeQuery(String query, Map<String, ?> variables, String dataPath)
+        throws IOException {
+        return executeQuery(query, variables, null, false, dataPath, Map.of());
+    }
+
+    /**
      * Executes a GraphQL query and returns either data or the first error message,
      * depending on the {@code returnError} flag.
      *
@@ -154,27 +169,39 @@ public class GraphQLTestClient {
      */
     public String executeQuery(String query, boolean returnError, String dataPath)
         throws IOException {
+        return executeQuery(query, Map.of(), null, returnError, dataPath, Map.of());
+    }
+
+    /**
+     * Executes a GraphQL operation with variables, optional operation name, and optional
+     * per-request headers.
+     *
+     * @param query         the GraphQL query string to execute
+     * @param variables     variables object sent in the GraphQL request payload
+     * @param operationName operation name to execute when the document contains named operations
+     * @param returnError   {@code true} to return the first error message rather than throwing
+     * @param dataPath      the JSONPath to the desired value; defaults to {@code "$.data"}
+     * @param headers       additional request headers for this call
+     * @return the extracted data string, or the first error message when {@code returnError} is true
+     * @throws IOException if the HTTP exchange fails, or if an error is present and {@code returnError} is false
+     */
+    public String executeQuery(
+        String query,
+        Map<String, ?> variables,
+        String operationName,
+        boolean returnError,
+        String dataPath,
+        Map<String, String> headers
+    ) throws IOException {
         log.trace("[executeQuery] query: {}", query);
         query = query.replace("\n", " ").replace("\r", " ");
 
-        Map<String, String> jsonMap = new HashMap<>();
-        jsonMap.put("query", query);
-        String jsonString = objectMapper.writeValueAsString(jsonMap);
+        String jsonString = requestBodyJson(query, variables, operationName);
 
         log.trace("[executeQuery] jsonString: {}", jsonString);
         RequestBody body = RequestBody.Companion.create(jsonString, JSON);
 
-        log.trace("[executeQuery] url: {}", graphqlUrl);
-        Request.Builder requestBuilder = new Request.Builder()
-            .url(graphqlUrl)
-            .post(body);
-
-        // Add auth header if configured
-        if (authHeaderValue != null && !authHeaderValue.isEmpty()) {
-            requestBuilder.addHeader(authHeaderName, authHeaderValue);
-        }
-
-        Request request = requestBuilder.build();
+        Request request = buildRequest(body, headers);
         log.trace("[executeQuery] request: {}", request.toString());
 
         try (Response response = client.newCall(request).execute()) {
@@ -241,27 +268,49 @@ public class GraphQLTestClient {
      * @throws IOException if the HTTP exchange fails or returns a non-2xx status
      */
     public String executeFullQuery(String query) throws IOException {
+        return executeFullQuery(query, Map.of(), null, Map.of());
+    }
+
+    /**
+     * Executes a GraphQL operation with variables and returns the full response body.
+     *
+     * @param query         the GraphQL document to execute
+     * @param variables     variables object sent in the GraphQL request payload
+     * @param operationName operation name to execute when the document contains named operations
+     * @return the raw HTTP response body as a string
+     * @throws IOException if the HTTP exchange fails or returns a non-2xx status
+     */
+    public String executeFullQuery(String query, Map<String, ?> variables, String operationName)
+        throws IOException {
+        return executeFullQuery(query, variables, operationName, Map.of());
+    }
+
+    /**
+     * Executes a GraphQL operation with variables, optional operation name, and optional
+     * per-request headers, returning the full response body.
+     *
+     * @param query         the GraphQL document to execute
+     * @param variables     variables object sent in the GraphQL request payload
+     * @param operationName operation name to execute when the document contains named operations
+     * @param headers       additional request headers for this call
+     * @return the raw HTTP response body as a string
+     * @throws IOException if the HTTP exchange fails or returns a non-2xx status
+     */
+    public String executeFullQuery(
+        String query,
+        Map<String, ?> variables,
+        String operationName,
+        Map<String, String> headers
+    ) throws IOException {
         log.trace("[executeFullQuery] query: {}", query);
         query = query.replace("\n", " ").replace("\r", " ");
 
-        Map<String, String> jsonMap = new HashMap<>();
-        jsonMap.put("query", query);
-        String jsonString = objectMapper.writeValueAsString(jsonMap);
+        String jsonString = requestBodyJson(query, variables, operationName);
 
         log.trace("[executeFullQuery] jsonString: {}", jsonString);
         RequestBody body = RequestBody.Companion.create(jsonString, JSON);
 
-        log.trace("[executeFullQuery] url: {}", graphqlUrl);
-        Request.Builder requestBuilder = new Request.Builder()
-            .url(graphqlUrl)
-            .post(body);
-
-        // Add auth header if configured
-        if (authHeaderValue != null && !authHeaderValue.isEmpty()) {
-            requestBuilder.addHeader(authHeaderName, authHeaderValue);
-        }
-
-        Request request = requestBuilder.build();
+        Request request = buildRequest(body, headers);
         log.trace("[executeFullQuery] request: {}", request.toString());
 
         try (Response response = client.newCall(request).execute()) {
@@ -281,6 +330,38 @@ public class GraphQLTestClient {
             log.error("[executeFullQuery] error: {}", e.getMessage());
             throw e;
         }
+    }
+
+    private String requestBodyJson(String query, Map<String, ?> variables, String operationName)
+        throws IOException {
+        Map<String, Object> jsonMap = new HashMap<>();
+        jsonMap.put("query", query);
+        if (variables != null && !variables.isEmpty()) {
+            jsonMap.put("variables", variables);
+        }
+        if (operationName != null && !operationName.isBlank()) {
+            jsonMap.put("operationName", operationName);
+        }
+        return objectMapper.writeValueAsString(jsonMap);
+    }
+
+    private Request buildRequest(RequestBody body, Map<String, String> headers) {
+        log.trace("[buildRequest] url: {}", graphqlUrl);
+        Request.Builder requestBuilder = new Request.Builder()
+            .url(graphqlUrl)
+            .post(body);
+
+        if (authHeaderValue != null && !authHeaderValue.isEmpty()) {
+            requestBuilder.addHeader(authHeaderName, authHeaderValue);
+        }
+        if (headers != null) {
+            headers.forEach((name, value) -> {
+                if (name != null && !name.isBlank() && value != null) {
+                    requestBuilder.header(name, value);
+                }
+            });
+        }
+        return requestBuilder.build();
     }
 
     /**

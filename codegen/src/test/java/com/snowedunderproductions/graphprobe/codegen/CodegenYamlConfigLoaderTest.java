@@ -22,6 +22,9 @@ class CodegenYamlConfigLoaderTest {
               - schema/api.graphqls
             basePackage: com.example.generated
             testStyle: fixture
+            operationTypes:
+              - query
+              - mutation
             maxOperations: 5
             fixtureMappings:
               Query.user:
@@ -34,6 +37,7 @@ class CodegenYamlConfigLoaderTest {
 
         assertThat(config.getBasePackage()).isEqualTo("com.example.generated");
         assertThat(config.getTestStyle()).isEqualTo("fixture");
+        assertThat(config.getOperationTypes()).containsExactly("query", "mutation");
         assertThat(config.getMaxOperations()).isEqualTo(5);
         assertThat(config.getSchemaFiles())
             .singleElement()

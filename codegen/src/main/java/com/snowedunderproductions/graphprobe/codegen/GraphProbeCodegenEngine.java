@@ -1,6 +1,5 @@
 package com.snowedunderproductions.graphprobe.codegen;
 
-import graphql.language.FieldDefinition;
 import graphql.language.ObjectTypeDefinition;
 import graphql.schema.idl.TypeDefinitionRegistry;
 
@@ -10,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 public class GraphProbeCodegenEngine {
 
     private static final Set<String> VALID_TEST_STYLES = Set.of("all", "smoke", "property", "fixture");
+    private static final Set<String> VALID_OPERATION_TYPES = Set.of("query", "mutation", "subscription", "all");
 
     private final SchemaLoader schemaLoader = new SchemaLoader();
     private final TestSourceGenerator sourceGenerator = new TestSourceGenerator(new GraphQlQueryBuilder());
@@ -34,22 +35,21 @@ public class GraphProbeCodegenEngine {
 
         TypeDefinitionRegistry registry = schemaLoader.loadRegistry(config.getSchemaFiles());
         String schemaHash = schemaLoader.schemaHash(config.getSchemaFiles());
-        String queryRoot = schemaLoader.resolveQueryRoot(registry);
-        ObjectTypeDefinition queryType = registry.getType(queryRoot, ObjectTypeDefinition.class)
-            .orElseThrow(() -> new IllegalArgumentException("Query root type '" + queryRoot + "' was not found in schema"));
-
         List<Pattern> includes = compile(config.getOperationIncludePatterns());
         List<Pattern> excludes = compile(config.getOperationExcludePatterns());
 
-        List<FieldDefinition> matchingFields = queryType.getFieldDefinitions().stream()
-            .sorted(Comparator.comparing(FieldDefinition::getName))
-            .filter(field -> shouldInclude(field.getName(), includes, excludes))
+        List<GeneratedOperation> matchingOperations = selectedOperationTypes(config).stream()
+            .flatMap(operationType -> operationsForType(registry, operationType).stream())
+            .sorted(Comparator.comparing(GeneratedOperation::qualifiedName))
+            .filter(operation -> shouldInclude(operation.fieldName(), operation.qualifiedName(), includes, excludes))
             .toList();
-        List<FieldDefinition> queryFields = matchingFields.stream()
+        List<GeneratedOperation> operations = matchingOperations.stream()
             .limit(config.getMaxOperations())
             .toList();
-        Map<String, FieldDefinition> queryFieldsByName = queryFields.stream()
-            .collect(Collectors.toMap(FieldDefinition::getName, Function.identity()));
+        Map<String, GeneratedOperation> operationsByName = operations.stream()
+            .collect(Collectors.toMap(GeneratedOperation::fieldName, Function.identity(), (a, b) -> a));
+        Map<String, GeneratedOperation> operationsByQualifiedName = operations.stream()
+            .collect(Collectors.toMap(GeneratedOperation::qualifiedName, Function.identity()));
 
         Path baseOutputDir = config.getPersistentOutputDirectory() != null
             ? config.getPersistentOutputDirectory()
@@ -57,12 +57,12 @@ public class GraphProbeCodegenEngine {
         Path packageDir = packageDirectory(baseOutputDir, config.getBasePackage());
         Files.createDirectories(packageDir);
 
-        Map<String, String> sources = sourceGenerator.generate(config, registry, queryFields, queryFieldsByName, schemaHash);
+        Map<String, String> sources = sourceGenerator.generate(config, registry, operations, operationsByName, operationsByQualifiedName, schemaHash);
 
         GenerationResult result = new GenerationResult();
-        matchingFields.stream()
-            .skip(queryFields.size())
-            .map(FieldDefinition::getName)
+        matchingOperations.stream()
+            .skip(operations.size())
+            .map(GeneratedOperation::qualifiedName)
             .forEach(result.getSkippedOperations()::add);
         for (Map.Entry<String, String> source : sources.entrySet()) {
             Path target = packageDir.resolve(source.getKey());
@@ -90,6 +90,11 @@ public class GraphProbeCodegenEngine {
         if (config.getTestStyle() != null && !VALID_TEST_STYLES.contains(config.getTestStyle().toLowerCase())) {
             throw new IllegalArgumentException("testStyle must be one of " + VALID_TEST_STYLES + " but was: " + config.getTestStyle());
         }
+        for (String operationType : selectedOperationTypes(config)) {
+            if (!VALID_OPERATION_TYPES.contains(operationType)) {
+                throw new IllegalArgumentException("operationTypes must contain only " + VALID_OPERATION_TYPES + " but included: " + operationType);
+            }
+        }
         if (config.getOutputDirectory() == null && config.getPersistentOutputDirectory() == null) {
             throw new IllegalArgumentException("outputDirectory or persistentOutputDirectory must be provided");
         }
@@ -105,9 +110,37 @@ public class GraphProbeCodegenEngine {
         return patterns.stream().filter(s -> !s.isBlank()).map(Pattern::compile).toList();
     }
 
-    private boolean shouldInclude(String operation, List<Pattern> includes, List<Pattern> excludes) {
-        boolean included = includes.isEmpty() || includes.stream().anyMatch(p -> p.matcher(operation).matches());
-        boolean excluded = excludes.stream().anyMatch(p -> p.matcher(operation).matches());
+    private List<String> selectedOperationTypes(CodegenConfig config) {
+        List<String> configured = config.getOperationTypes();
+        if (configured == null || configured.isEmpty()) {
+            configured = List.of("query");
+        }
+        LinkedHashSet<String> selected = new LinkedHashSet<>();
+        for (String type : configured) {
+            String normalized = type == null ? "" : type.trim().toLowerCase();
+            if ("all".equals(normalized)) {
+                selected.addAll(List.of("query", "mutation", "subscription"));
+            } else if (!normalized.isBlank()) {
+                selected.add(normalized);
+            }
+        }
+        return selected.stream().toList();
+    }
+
+    private List<GeneratedOperation> operationsForType(TypeDefinitionRegistry registry, String operationType) {
+        return schemaLoader.resolveOperationRoot(registry, operationType)
+            .flatMap(rootType -> registry.getType(rootType, ObjectTypeDefinition.class)
+                .map(typeDefinition -> typeDefinition.getFieldDefinitions().stream()
+                    .map(field -> new GeneratedOperation(operationType, rootType, field))
+                    .toList()))
+            .orElseGet(List::of);
+    }
+
+    private boolean shouldInclude(String operation, String qualifiedOperation, List<Pattern> includes, List<Pattern> excludes) {
+        boolean included = includes.isEmpty() || includes.stream().anyMatch(p ->
+            p.matcher(operation).matches() || p.matcher(qualifiedOperation).matches());
+        boolean excluded = excludes.stream().anyMatch(p ->
+            p.matcher(operation).matches() || p.matcher(qualifiedOperation).matches());
         return included && !excluded;
     }
 

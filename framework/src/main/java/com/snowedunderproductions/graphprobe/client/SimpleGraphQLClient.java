@@ -123,6 +123,20 @@ public class SimpleGraphQLClient {
 	}
 
 	/**
+	 * Execute a GraphQL query with variables and return data at the supplied JSONPath.
+	 *
+	 * @param query     the query to execute
+	 * @param variables variables object sent in the GraphQL request payload
+	 * @param dataPath  the JSONPath to the data in the response
+	 * @return the extracted value as a string, or {@code null} if the path resolves to nothing
+	 * @throws IOException if there is an error executing the query
+	 */
+	@Step("GraphQL query with variables -> {2}")
+	public String executeQuery(String query, Map<String, ?> variables, String dataPath) throws IOException {
+		return executeQuery(query, variables, null, false, dataPath, Map.of());
+	}
+
+	/**
 	 * Execute a query and extract a single value from the JSON response at the supplied
 	 * JSONPath. A convenience alias for {@link #executeQuery(String, String)} so callers
 	 * (e.g. pagination helpers) can express intent clearly.
@@ -148,18 +162,34 @@ public class SimpleGraphQLClient {
 	 */
 	@Step("GraphQL query -> {2}")
 	public String executeQuery(String query, boolean returnError, String dataPath) throws IOException {
+		return executeQuery(query, Map.of(), null, returnError, dataPath, Map.of());
+	}
+
+	/**
+	 * Execute a GraphQL operation with variables, optional operation name, and optional
+	 * per-request headers.
+	 *
+	 * @param query         the query to execute
+	 * @param variables     variables object sent in the GraphQL request payload
+	 * @param operationName operation name to execute when the document contains named operations
+	 * @param returnError   if true, return the error message instead of throwing an exception
+	 * @param dataPath      the path to the data in the response, if null is passed in it will become "$.data"
+	 * @param headers       additional request headers for this call
+	 * @return the data or error message returned by the query
+	 * @throws IOException if there is an error executing the query
+	 */
+	@Step("GraphQL operation -> {4}")
+	public String executeQuery(String query, Map<String, ?> variables, String operationName, boolean returnError, String dataPath, Map<String, String> headers) throws IOException {
 		log.trace("[executeQuery] query: {}", query);
 		query = query.replace("\n", " ").replace("\r", " ");
 		attach("GraphQL query", "application/graphql", query, ".graphql");
 
-		Map<String, String> jsonMap = new HashMap<>();
-		jsonMap.put("query", query);
-		String jsonString = objectMapper.writeValueAsString(jsonMap);
+		String jsonString = requestBodyJson(query, variables, operationName);
 
 		log.trace("[executeQuery] jsonString: {}", jsonString);
 		RequestBody body = RequestBody.Companion.create(jsonString, JSON);
 
-		Request request = buildRequest(body);
+		Request request = buildRequest(body, headers);
 		log.trace("[executeQuery] request: {}", request.toString());
 		try (ThrottledResponse throttled = executeThrottledWithRetry(request, query); Response response = throttled.response()) {
 			if (!response.isSuccessful()) {
@@ -381,18 +411,46 @@ public class SimpleGraphQLClient {
 	 */
 	@Step("GraphQL full query")
 	public String executeFullQuery(String query) throws IOException {
+		return executeFullQuery(query, Map.of(), null, Map.of());
+	}
+
+	/**
+	 * Execute a GraphQL operation with variables and return the full, unparsed response body.
+	 *
+	 * @param query         the query to execute
+	 * @param variables     variables object sent in the GraphQL request payload
+	 * @param operationName operation name to execute when the document contains named operations
+	 * @return the full response body as a string
+	 * @throws IOException if there is an error executing the query
+	 */
+	@Step("GraphQL full query with variables")
+	public String executeFullQuery(String query, Map<String, ?> variables, String operationName) throws IOException {
+		return executeFullQuery(query, variables, operationName, Map.of());
+	}
+
+	/**
+	 * Execute a GraphQL operation with variables, optional operation name, and optional
+	 * per-request headers, returning the full, unparsed response body.
+	 *
+	 * @param query         the query to execute
+	 * @param variables     variables object sent in the GraphQL request payload
+	 * @param operationName operation name to execute when the document contains named operations
+	 * @param headers       additional request headers for this call
+	 * @return the full response body as a string
+	 * @throws IOException if there is an error executing the query
+	 */
+	@Step("GraphQL full operation")
+	public String executeFullQuery(String query, Map<String, ?> variables, String operationName, Map<String, String> headers) throws IOException {
 		log.trace("[executeFullQuery] query: {}", query);
 		query = query.replace("\n", " ").replace("\r", " ");
 		attach("GraphQL query", "application/graphql", query, ".graphql");
 
-		Map<String, String> jsonMap = new HashMap<>();
-		jsonMap.put("query", query);
-		String jsonString = objectMapper.writeValueAsString(jsonMap);
+		String jsonString = requestBodyJson(query, variables, operationName);
 
 		log.trace("[executeFullQuery] jsonString: {}", jsonString);
 		RequestBody body = RequestBody.Companion.create(jsonString, JSON);
 
-		Request request = buildRequest(body);
+		Request request = buildRequest(body, headers);
 		log.trace("[executeFullQuery] request: {}", request.toString());
 		try (ThrottledResponse throttled = executeThrottledWithRetry(request, query); Response response = throttled.response()) {
 			if (!response.isSuccessful()) {
@@ -417,11 +475,38 @@ public class SimpleGraphQLClient {
 	 * Builds the POST request to the configured endpoint, adding the auth header only
 	 * when an auth value is configured.
 	 */
+	private String requestBodyJson(String query, Map<String, ?> variables, String operationName) throws IOException {
+		Map<String, Object> jsonMap = new HashMap<>();
+		jsonMap.put("query", query);
+		if (variables != null && !variables.isEmpty()) {
+			jsonMap.put("variables", variables);
+		}
+		if (operationName != null && !operationName.isBlank()) {
+			jsonMap.put("operationName", operationName);
+		}
+		return objectMapper.writeValueAsString(jsonMap);
+	}
+
 	private Request buildRequest(RequestBody body) {
+		return buildRequest(body, Map.of());
+	}
+
+	/**
+	 * Builds the POST request to the configured endpoint, adding the default auth header and
+	 * any per-request headers when values are configured.
+	 */
+	private Request buildRequest(RequestBody body, Map<String, String> headers) {
 		log.trace("[buildRequest] url: {}", graphqlUrl);
 		Request.Builder builder = new Request.Builder().url(graphqlUrl).post(body);
 		if (authHeaderValue != null && !authHeaderValue.isEmpty()) {
 			builder.addHeader(authHeaderName, authHeaderValue);
+		}
+		if (headers != null) {
+			headers.forEach((name, value) -> {
+				if (name != null && !name.isBlank() && value != null) {
+					builder.header(name, value);
+				}
+			});
 		}
 		return builder.build();
 	}

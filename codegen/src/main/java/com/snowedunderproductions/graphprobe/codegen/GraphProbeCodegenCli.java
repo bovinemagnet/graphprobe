@@ -32,6 +32,7 @@ public final class GraphProbeCodegenCli {
         List<Path> schemaFiles = new ArrayList<>();
         Path configFile = null;
         boolean otherArgs = false;
+        boolean operationTypesSpecified = false;
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
             switch (arg) {
@@ -58,6 +59,19 @@ public final class GraphProbeCodegenCli {
                 }
                 case "--exclude" -> {
                     config.getOperationExcludePatterns().add(requireValue(args, ++i, arg));
+                    otherArgs = true;
+                }
+                case "--operation-type" -> {
+                    if (!operationTypesSpecified) {
+                        config.getOperationTypes().clear();
+                        operationTypesSpecified = true;
+                    }
+                    config.getOperationTypes().add(requireValue(args, ++i, arg));
+                    otherArgs = true;
+                }
+                case "--operation-types" -> {
+                    operationTypesSpecified = true;
+                    config.setOperationTypes(List.of(requireValue(args, ++i, arg).split(",")));
                     otherArgs = true;
                 }
                 case "--max-operations" -> {

@@ -15,6 +15,7 @@ public class CodegenConfig {
     private Path fixtureMappingsFile;
     private List<String> operationIncludePatterns = new ArrayList<>();
     private List<String> operationExcludePatterns = new ArrayList<>();
+    private List<String> operationTypes = new ArrayList<>(List.of("query"));
     private int maxOperations = 200;
     private String testStyle = "all";
     private Map<String, FixtureMapping> fixtureMappings = new LinkedHashMap<>();
@@ -86,6 +87,19 @@ public class CodegenConfig {
 
     public void setOperationExcludePatterns(List<String> operationExcludePatterns) {
         this.operationExcludePatterns = operationExcludePatterns;
+    }
+
+    public List<String> getOperationTypes() {
+        return operationTypes;
+    }
+
+    /**
+     * Sets the GraphQL operation types to generate. Supported values are {@code query},
+     * {@code mutation}, {@code subscription}, and {@code all}. Query generation remains
+     * the default; mutation and subscription tests are opt in.
+     */
+    public void setOperationTypes(List<String> operationTypes) {
+        this.operationTypes = operationTypes;
     }
 
     public int getMaxOperations() {

@@ -7,10 +7,12 @@ import com.netflix.graphql.dgs.client.MonoGraphQLClient;
 import com.netflix.graphql.dgs.client.WebClientGraphQLClient;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.graphql.test.tester.GraphQlTester;
 import org.springframework.graphql.test.tester.HttpGraphQlTester;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -54,6 +56,10 @@ import reactor.core.publisher.Mono;
  * <pre>{@code
  * // Extract a single value by JSONPath (blocks until resolved)
  * String result = GraphQLTestExecutor.simpleCall(query, "$.data.users");
+ *
+ * // Add per-request headers on top of the configured defaults
+ * String scoped = GraphQLTestExecutor.simpleCall(
+ *     query, "$.data.users", Map.of("X-Tenant-Id", "acme"));
  *
  * // Return the matched value as a formatted JSON string
  * String json = GraphQLTestExecutor.simpleJsonCall(query, "$.data.users");
@@ -140,17 +146,42 @@ public class GraphQLTestExecutor {
      * corresponding value variable is non-empty).
      */
     public static final WebClientGraphQLClient graphQLClient =
-        MonoGraphQLClient.createWithWebClient(webClient, headers -> {
-            if (!AUTH_HEADER_VALUE.isEmpty()) {
-                headers.add(AUTH_HEADER_NAME, AUTH_HEADER_VALUE);
-            }
-            if (!GRAPHPROBE_HEADER_VALUE.isEmpty()) {
-                headers.add(GRAPHPROBE_HEADER_NAME, GRAPHPROBE_HEADER_VALUE);
-            }
-            if (!API_GW_HEADER_VALUE.isEmpty()) {
-                headers.add(API_GW_HEADER_NAME, API_GW_HEADER_VALUE);
-            }
+        MonoGraphQLClient.createWithWebClient(webClient, GraphQLTestExecutor::applyDefaultHeaders);
+
+    /**
+     * Applies the environment-configured authorisation, GraphProbe probe-key, and API gateway
+     * headers to the supplied {@link HttpHeaders} (each only when its value variable is non-empty).
+     */
+    private static void applyDefaultHeaders(HttpHeaders headers) {
+        if (!AUTH_HEADER_VALUE.isEmpty()) {
+            headers.add(AUTH_HEADER_NAME, AUTH_HEADER_VALUE);
+        }
+        if (!GRAPHPROBE_HEADER_VALUE.isEmpty()) {
+            headers.add(GRAPHPROBE_HEADER_NAME, GRAPHPROBE_HEADER_VALUE);
+        }
+        if (!API_GW_HEADER_VALUE.isEmpty()) {
+            headers.add(API_GW_HEADER_NAME, API_GW_HEADER_VALUE);
+        }
+    }
+
+    /**
+     * Selects the reactive client for a call: the shared {@link #graphQLClient} when no extra
+     * headers are supplied, otherwise a client that applies the default headers and then sets the
+     * supplied per-request headers on top (a per-request value replaces the default of the same name).
+     */
+    private static WebClientGraphQLClient clientFor(Map<String, String> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return graphQLClient;
+        }
+        return MonoGraphQLClient.createWithWebClient(webClient, httpHeaders -> {
+            applyDefaultHeaders(httpHeaders);
+            headers.forEach((name, value) -> {
+                if (name != null && !name.isBlank() && value != null) {
+                    httpHeaders.set(name, value);
+                }
+            });
         });
+    }
 
     /**
      * Pre-configured {@link org.springframework.graphql.test.tester.HttpGraphQlTester}
@@ -199,10 +230,24 @@ public class GraphQLTestExecutor {
      *         or an error occurs
      */
     public static String simpleCall(String query, String JSONPath) {
+        return simpleCall(query, JSONPath, null);
+    }
+
+    /**
+     * Variant of {@link #simpleCall(String, String)} that adds the supplied headers to the request
+     * on top of the environment-configured defaults. A supplied header replaces the default header
+     * of the same name.
+     *
+     * @param query    the GraphQL query string to execute
+     * @param JSONPath the JSONPath expression used to extract data from the response
+     * @param headers  additional request headers (may be {@code null} or empty to use defaults only)
+     * @return the extracted value as a string, or {@code null} if no data is found or an error occurs
+     */
+    public static String simpleCall(String query, String JSONPath, Map<String, String> headers) {
         // The GraphQLResponse contains data and errors.
         // cache() so the logging subscription below and the terminal block() share a single
         // HTTP request instead of each re-subscribing to the cold Mono.
-        Mono<GraphQLResponse> graphQLResponseMono = graphQLClient
+        Mono<GraphQLResponse> graphQLResponseMono = clientFor(headers)
             .reactiveExecuteQuery(query)
             .timeout(DEFAULT_TEST_TIMEOUT_DURATION)
             .cache();
@@ -238,6 +283,20 @@ public class GraphQLTestExecutor {
      *         if no data is found
      */
     public static String simpleJsonCall(String query, String JSONPath) {
+        return simpleJsonCall(query, JSONPath, null);
+    }
+
+    /**
+     * Variant of {@link #simpleJsonCall(String, String)} that adds the supplied headers to the
+     * request on top of the environment-configured defaults. A supplied header replaces the default
+     * header of the same name.
+     *
+     * @param query    the GraphQL query string to execute
+     * @param JSONPath the JSONPath expression used to extract data from the response
+     * @param headers  additional request headers (may be {@code null} or empty to use defaults only)
+     * @return a pretty-printed JSON string of the matched object, or an empty string if no data is found
+     */
+    public static String simpleJsonCall(String query, String JSONPath, Map<String, String> headers) {
         log.trace(
             "[simpleJsonCall] epoch:{} query: {} ",
             System.currentTimeMillis(),
@@ -246,7 +305,7 @@ public class GraphQLTestExecutor {
 
         // The GraphQLResponse contains data and errors.
         // cache() so the blockOptional()/block() pair below resolves a single HTTP request.
-        Mono<GraphQLResponse> graphQLResponseMono = graphQLClient
+        Mono<GraphQLResponse> graphQLResponseMono = clientFor(headers)
             .reactiveExecuteQuery(query)
             .timeout(DEFAULT_TEST_LONG_TIMEOUT_DURATION)
             .cache();
@@ -314,10 +373,24 @@ public class GraphQLTestExecutor {
      *         if the JSONPath resolves to nothing
      */
     public static String simpleErrorCall(String query, String JSONPath) {
+        return simpleErrorCall(query, JSONPath, null);
+    }
+
+    /**
+     * Variant of {@link #simpleErrorCall(String, String)} that adds the supplied headers to the
+     * request on top of the environment-configured defaults. A supplied header replaces the default
+     * header of the same name.
+     *
+     * @param query    the GraphQL query string to execute
+     * @param JSONPath the JSONPath expression used to extract data from the response
+     * @param headers  additional request headers (may be {@code null} or empty to use defaults only)
+     * @return a pretty-printed JSON string of the matched value, or an empty string if nothing matches
+     */
+    public static String simpleErrorCall(String query, String JSONPath, Map<String, String> headers) {
         // The GraphQLResponse contains data and errors.
         // cache() so the logging subscription plus the blockOptional()/block() pair all share a
         // single HTTP request instead of firing three against the server.
-        Mono<GraphQLResponse> graphQLResponseMono = graphQLClient
+        Mono<GraphQLResponse> graphQLResponseMono = clientFor(headers)
             .reactiveExecuteQuery(query)
             .timeout(DEFAULT_TEST_TIMEOUT_DURATION)
             .cache();

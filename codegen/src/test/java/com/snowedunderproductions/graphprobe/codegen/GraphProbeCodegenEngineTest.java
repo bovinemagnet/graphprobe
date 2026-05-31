@@ -63,8 +63,9 @@ class GraphProbeCodegenEngineTest {
 
         assertThat(Files.readString(pkg.resolve("GeneratedSchemaSmokeTest.java")))
             .contains("class GeneratedSchemaSmokeTest")
-            .contains("smoke_user")
-            .contains("smoke_users");
+            .contains("smoke_query_user")
+            .contains("smoke_query_users")
+            .contains("CLIENT.executeFullQuery(query, variables, \"Generated_query_user\")");
     }
 
     @Test
@@ -97,7 +98,7 @@ class GraphProbeCodegenEngineTest {
         Path fixtureTest = tempDir.resolve("out/com/example/generated/graphprobe/GeneratedFixtureBackedTest.java");
         assertThat(Files.readString(fixtureTest))
             .contains("import com.example.generated.graphprobe.providers.QueryuserArgumentsProvider;")
-            .contains("user(id: ")
+            .contains("user(id: $id)")
             .contains("{ id name }");
 
         compileGeneratedSources(result);
@@ -127,8 +128,10 @@ class GraphProbeCodegenEngineTest {
 
         Path propertyTest = tempDir.resolve("out/com/example/generated/graphprobe/GeneratedPropertyTest.java");
         assertThat(Files.readString(propertyTest))
-            .contains("@ForAll(\"generatedLimit\") Integer limit")
-            .contains("users(limit: ")
+            .contains("@ForAll(\"generatedQueryUsersLimit\") Integer limit")
+            .contains("query Generated_query_users($limit: Int)")
+            .contains("users(limit: $limit)")
+            .contains("variables.put(\"limit\", limit)")
             .contains("{ id name }")
             .doesNotContain("limit: \\\"%s\\\"");
 
@@ -176,8 +179,120 @@ class GraphProbeCodegenEngineTest {
 
         Path smokeTest = tempDir.resolve("out/com/example/generated/GeneratedSchemaSmokeTest.java");
         assertThat(Files.readString(smokeTest))
-            .contains("Class.forName(\"com.example.dgs.generated.DgsConstants$QUERY\")")
-            .contains("dgsQueryField(\"User\", \"user\")");
+            .contains("Class.forName(\"com.example.dgs.generated.DgsConstants$\" + operationType)")
+            .contains("dgsOperationField(\"QUERY\", \"User\", \"user\")");
+
+        compileGeneratedSources(result);
+    }
+
+    @Test
+    void mutationGenerationIsOptIn() throws Exception {
+        Path schema = tempDir.resolve("schema.graphqls");
+        Files.writeString(schema, """
+            type Query { ping: String }
+            type Mutation { createUser(name: String!): User }
+            type User { id: ID! name: String }
+            """);
+
+        CodegenConfig defaultConfig = new CodegenConfig();
+        defaultConfig.setSchemaFiles(List.of(schema));
+        defaultConfig.setBasePackage("com.example.generated");
+        defaultConfig.setOutputDirectory(tempDir.resolve("default-out"));
+        defaultConfig.setTestStyle("smoke");
+
+        new GraphProbeCodegenEngine().generate(defaultConfig);
+        assertThat(Files.readString(tempDir.resolve("default-out/com/example/generated/GeneratedSchemaSmokeTest.java")))
+            .contains("smoke_query_ping")
+            .doesNotContain("smoke_mutation_createUser");
+
+        CodegenConfig mutationConfig = new CodegenConfig();
+        mutationConfig.setSchemaFiles(List.of(schema));
+        mutationConfig.setBasePackage("com.example.generated");
+        mutationConfig.setOutputDirectory(tempDir.resolve("mutation-out"));
+        mutationConfig.setTestStyle("smoke");
+        mutationConfig.setOperationTypes(List.of("mutation"));
+
+        GenerationResult result = new GraphProbeCodegenEngine().generate(mutationConfig);
+        Path smokeTest = tempDir.resolve("mutation-out/com/example/generated/GeneratedSchemaSmokeTest.java");
+        assertThat(Files.readString(smokeTest))
+            .contains("mutation Generated_mutation_createUser($name: String!)")
+            .contains("createUser(name: $name)")
+            .contains("smoke_mutation_createUser")
+            .doesNotContain("smoke_query_ping");
+
+        compileGeneratedSources(result);
+    }
+
+    @Test
+    void generatedSelectionsSupportInterfacesAndUnions() throws Exception {
+        Path schema = tempDir.resolve("schema.graphqls");
+        Files.writeString(schema, """
+            type Query {
+              node: Node
+              search: SearchResult
+            }
+
+            interface Node {
+              id: ID!
+              displayName: String
+            }
+
+            union SearchResult = User | Team
+
+            type User implements Node {
+              id: ID!
+              displayName: String
+              email: String
+            }
+
+            type Team implements Node {
+              id: ID!
+              displayName: String
+              members: Int
+            }
+            """);
+
+        CodegenConfig config = new CodegenConfig();
+        config.setSchemaFiles(List.of(schema));
+        config.setBasePackage("com.example.generated");
+        config.setOutputDirectory(tempDir.resolve("out"));
+        config.setTestStyle("smoke");
+
+        GenerationResult result = new GraphProbeCodegenEngine().generate(config);
+
+        Path smokeTest = tempDir.resolve("out/com/example/generated/GeneratedSchemaSmokeTest.java");
+        assertThat(Files.readString(smokeTest))
+            .contains("node { id displayName }")
+            .contains("search { __typename ... on User")
+            .contains("... on Team");
+
+        compileGeneratedSources(result);
+    }
+
+    @Test
+    void propertyGenerationCoversEverySupportedArgument() throws Exception {
+        Path schema = tempDir.resolve("schema.graphqls");
+        Files.writeString(schema, """
+            enum Status { ACTIVE INACTIVE }
+            type Query {
+              users(limit: Int, status: Status): [User!]
+            }
+            type User { id: ID! name: String }
+            """);
+
+        CodegenConfig config = new CodegenConfig();
+        config.setSchemaFiles(List.of(schema));
+        config.setBasePackage("com.example.generated");
+        config.setOutputDirectory(tempDir.resolve("out"));
+        config.setTestStyle("property");
+
+        GenerationResult result = new GraphProbeCodegenEngine().generate(config);
+
+        Path propertyTest = tempDir.resolve("out/com/example/generated/GeneratedPropertyTest.java");
+        assertThat(Files.readString(propertyTest))
+            .contains("property_query_users_limit")
+            .contains("property_query_users_status")
+            .contains("@ForAll(\"generatedQueryUsersStatus\") String status");
 
         compileGeneratedSources(result);
     }

@@ -32,12 +32,25 @@ class GraphProbeCodegenCliTest {
             "--base-package", "com.example.generated",
             "--style", "smoke",
             "--include", "user.*",
+            "--operation-type", "mutation",
             "--max-operations", "7"
         });
 
         assertThat(config.getTestStyle()).isEqualTo("smoke");
         assertThat(config.getOperationIncludePatterns()).containsExactly("user.*");
+        assertThat(config.getOperationTypes()).containsExactly("mutation");
         assertThat(config.getMaxOperations()).isEqualTo(7);
+    }
+
+    @Test
+    void parseArgsReadsCommaSeparatedOperationTypes() throws Exception {
+        CodegenConfig config = GraphProbeCodegenCli.parseArgs(new String[] {
+            "--schema", "schema.graphqls",
+            "--base-package", "com.example.generated",
+            "--operation-types", "query,mutation"
+        });
+
+        assertThat(config.getOperationTypes()).containsExactly("query", "mutation");
     }
 
     @Test

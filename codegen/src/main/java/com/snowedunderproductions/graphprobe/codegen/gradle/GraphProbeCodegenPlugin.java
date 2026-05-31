@@ -18,6 +18,7 @@ public class GraphProbeCodegenPlugin implements Plugin<Project> {
         extension.getOutputDirectory().convention(project.getLayout().getBuildDirectory().dir("generated/graphprobe-test/java"));
         extension.getMaxOperations().convention(200);
         extension.getTestStyle().convention("all");
+        extension.getOperationTypes().convention(java.util.List.of("query"));
 
         project.getTasks().register("generateGraphProbeTests", GenerateGraphProbeTestsTask.class, task -> {
             task.setDescription("Generate GraphProbe JUnit tests from GraphQL schema files");
@@ -31,6 +32,7 @@ public class GraphProbeCodegenPlugin implements Plugin<Project> {
             task.getMaxOperations().set(extension.getMaxOperations());
             task.getOperationIncludePatterns().set(extension.getOperationIncludePatterns());
             task.getOperationExcludePatterns().set(extension.getOperationExcludePatterns());
+            task.getOperationTypes().set(extension.getOperationTypes());
             task.getTestStyle().set(extension.getTestStyle());
             task.getFixtureMappingsFile().set(extension.getFixtureMappingsFile());
             task.getFixtureMappingsFingerprint().set(project.provider(() ->

@@ -2,12 +2,15 @@ package com.snowedunderproductions.graphprobe.codegen;
 
 import graphql.language.EnumTypeDefinition;
 import graphql.language.FieldDefinition;
+import graphql.language.InputObjectTypeDefinition;
 import graphql.language.InputValueDefinition;
+import graphql.language.InterfaceTypeDefinition;
 import graphql.language.ListType;
 import graphql.language.NonNullType;
 import graphql.language.ObjectTypeDefinition;
 import graphql.language.Type;
 import graphql.language.TypeName;
+import graphql.language.UnionTypeDefinition;
 import graphql.schema.idl.TypeDefinitionRegistry;
 
 import java.util.ArrayList;
@@ -41,10 +44,16 @@ final class GraphQlQueryBuilder {
 
     /** Builds a raw GraphQL query document for a smoke test. */
     String operationQuery(FieldDefinition operation, TypeDefinitionRegistry registry) {
-        String args = argumentLiteral(operation.getInputValueDefinitions(), registry);
-        String selection = selectionSet(operation.getType(), registry, 0, new LinkedHashSet<>());
-        String field = operation.getName() + args + (selection.isBlank() ? "" : " " + selection);
-        return "query Generated_" + operation.getName() + " {\n  " + field + "\n}";
+        return operationDocument(new GeneratedOperation("query", "Query", operation), registry, Set.of());
+    }
+
+    String operationDocument(GeneratedOperation operation, TypeDefinitionRegistry registry, Set<String> variableArguments) {
+        String operationName = generatedOperationName(operation);
+        String variables = variableDefinitions(operation.field().getInputValueDefinitions(), variableArguments);
+        String args = argumentLiteral(operation.field().getInputValueDefinitions(), registry, variableArguments);
+        String selection = selectionSet(operation.field().getType(), registry, 0, new LinkedHashSet<>());
+        String field = operation.fieldName() + args + (selection.isBlank() ? "" : " " + selection);
+        return operation.operationType() + " " + operationName + variables + " {\n  " + field + "\n}";
     }
 
     /**
@@ -82,15 +91,35 @@ final class GraphQlQueryBuilder {
         return expression.toString();
     }
 
+    String generatedOperationName(GeneratedOperation operation) {
+        return "Generated_" + JavaNaming.safeName(operation.operationType() + "_" + operation.fieldName());
+    }
+
     private void appendJavaString(StringBuilder expression, String value) {
         expression.append(JavaNaming.javaString(value));
     }
 
     private String argumentLiteral(List<InputValueDefinition> args, TypeDefinitionRegistry registry) {
+        return argumentLiteral(args, registry, Set.of());
+    }
+
+    private String argumentLiteral(List<InputValueDefinition> args, TypeDefinitionRegistry registry, Set<String> variableArguments) {
         if (args == null || args.isEmpty()) {
             return "";
         }
-        return "(" + args.stream().map(arg -> arg.getName() + ": " + sampleLiteral(arg.getType(), registry)).collect(Collectors.joining(", ")) + ")";
+        return "(" + args.stream()
+            .map(arg -> arg.getName() + ": " + (variableArguments.contains(arg.getName()) ? "$" + arg.getName() : sampleLiteral(arg.getType(), registry)))
+            .collect(Collectors.joining(", ")) + ")";
+    }
+
+    private String variableDefinitions(List<InputValueDefinition> args, Set<String> variableArguments) {
+        if (args == null || args.isEmpty() || variableArguments.isEmpty()) {
+            return "";
+        }
+        return args.stream()
+            .filter(arg -> variableArguments.contains(arg.getName()))
+            .map(arg -> "$" + arg.getName() + ": " + graphQlType(arg.getType()))
+            .collect(Collectors.joining(", ", "(", ")"));
     }
 
     private String sampleLiteral(Type<?> type, TypeDefinitionRegistry registry) {
@@ -119,6 +148,9 @@ final class GraphQlQueryBuilder {
                 if (enumType.isPresent() && !enumType.get().getEnumValueDefinitions().isEmpty()) {
                     yield enumType.get().getEnumValueDefinitions().get(0).getName();
                 }
+                if (registry.getType(name, InputObjectTypeDefinition.class).isPresent()) {
+                    yield "{}";
+                }
                 yield "\"sample\"";
             }
         };
@@ -139,15 +171,30 @@ final class GraphQlQueryBuilder {
         if (depth >= MAX_SELECTION_DEPTH || visited.contains(name)) {
             return "{ __typename }";
         }
+        Optional<UnionTypeDefinition> unionType = registry.getType(name, UnionTypeDefinition.class);
+        if (unionType.isPresent()) {
+            return unionSelectionSet(unionType.get(), registry, depth, visited);
+        }
+
+        List<FieldDefinition> candidateFields;
         Optional<ObjectTypeDefinition> objectType = registry.getType(name, ObjectTypeDefinition.class);
-        if (objectType.isEmpty()) {
-            return "";
+        if (objectType.isPresent()) {
+            candidateFields = objectType.get().getFieldDefinitions();
+        } else {
+            Optional<InterfaceTypeDefinition> interfaceType = registry.getType(name, InterfaceTypeDefinition.class);
+            if (interfaceType.isEmpty()) {
+                return "";
+            }
+            candidateFields = interfaceType.get().getFieldDefinitions();
         }
 
         visited.add(name);
-        List<FieldDefinition> ordered = orderFields(objectType.get().getFieldDefinitions());
+        List<FieldDefinition> ordered = orderFields(candidateFields);
         List<String> fields = new ArrayList<>();
         for (FieldDefinition field : ordered) {
+            if (hasRequiredArguments(field)) {
+                continue;
+            }
             TypeName fieldTypeName = unwrap(field.getType());
             if (fieldTypeName == null) {
                 continue;
@@ -172,6 +219,40 @@ final class GraphQlQueryBuilder {
         }
 
         return "{ " + String.join(" ", fields) + " }";
+    }
+
+    private String unionSelectionSet(UnionTypeDefinition unionType, TypeDefinitionRegistry registry, int depth, Set<String> visited) {
+        if (depth >= MAX_SELECTION_DEPTH) {
+            return "{ __typename }";
+        }
+        List<String> fragments = unionType.getMemberTypes().stream()
+            .map(this::unwrap)
+            .filter(typeName -> typeName != null)
+            .map(TypeName::getName)
+            .filter(typeName -> !visited.contains(typeName))
+            .limit(3)
+            .map(typeName -> {
+                Optional<ObjectTypeDefinition> objectType = registry.getType(typeName, ObjectTypeDefinition.class);
+                if (objectType.isEmpty()) {
+                    return "";
+                }
+                String selection = selectionSet(new TypeName(typeName), registry, depth + 1, visited);
+                if (selection.isBlank()) {
+                    selection = "{ __typename }";
+                }
+                return "... on " + typeName + " " + selection;
+            })
+            .filter(fragment -> !fragment.isBlank())
+            .toList();
+        if (fragments.isEmpty()) {
+            return "{ __typename }";
+        }
+        return "{ __typename " + String.join(" ", fragments) + " }";
+    }
+
+    private boolean hasRequiredArguments(FieldDefinition field) {
+        return field.getInputValueDefinitions().stream()
+            .anyMatch(argument -> argument.getType() instanceof NonNullType);
     }
 
     private List<FieldDefinition> orderFields(List<FieldDefinition> fields) {
@@ -224,6 +305,19 @@ final class GraphQlQueryBuilder {
         return "gqlString(" + variableName + ")";
     }
 
+    String fixtureVariableExpression(Type<?> type, TypeDefinitionRegistry registry, String variableName) {
+        String name = requireTypeName(type).getName();
+        if (registry.getType(name, EnumTypeDefinition.class).isPresent()) {
+            return variableName;
+        }
+        return switch (name) {
+            case "Int" -> "integerVariable(" + variableName + ")";
+            case "Float" -> "doubleVariable(" + variableName + ")";
+            case "Boolean" -> "booleanVariable(" + variableName + ")";
+            default -> variableName;
+        };
+    }
+
     /** GraphQL literal helper used by property tests (typed numeric/boolean helpers). */
     String typedLiteralExpression(Type<?> type, TypeDefinitionRegistry registry, String variableName) {
         String name = requireTypeName(type).getName();
@@ -257,11 +351,62 @@ final class GraphQlQueryBuilder {
 
     /** True if the argument type can be driven by a generated property-test arbitrary. */
     boolean isSupportedPropertyType(Type<?> type, TypeDefinitionRegistry registry) {
+        if (containsList(type)) {
+            return false;
+        }
         TypeName typeName = unwrap(type);
         if (typeName == null) {
             return false;
         }
         String name = typeName.getName();
         return BUILTIN_SCALARS.contains(name) || registry.getType(name, EnumTypeDefinition.class).isPresent();
+    }
+
+    String sampleVariableExpression(Type<?> type, TypeDefinitionRegistry registry) {
+        if (type instanceof NonNullType nonNullType) {
+            return sampleVariableExpression(nonNullType.getType(), registry);
+        }
+        if (type instanceof ListType listType) {
+            return "List.of(" + sampleVariableExpression(listType.getType(), registry) + ")";
+        }
+        String name = requireTypeName(type).getName();
+        if (registry.getType(name, EnumTypeDefinition.class).isPresent()) {
+            return registry.getType(name, EnumTypeDefinition.class)
+                .filter(enumType -> !enumType.getEnumValueDefinitions().isEmpty())
+                .map(enumType -> "\"" + JavaNaming.javaString(enumType.getEnumValueDefinitions().get(0).getName()) + "\"")
+                .orElse("\"sample\"");
+        }
+        if (registry.getType(name, InputObjectTypeDefinition.class).isPresent()) {
+            return "new LinkedHashMap<String, Object>()";
+        }
+        return switch (name) {
+            case "Int" -> "1";
+            case "Float" -> "1.0D";
+            case "Boolean" -> "true";
+            case "ID" -> "\"1\"";
+            case "Date" -> "\"2024-01-01\"";
+            case "DateTime" -> "\"2024-01-01T00:00:00Z\"";
+            case "BigDecimal" -> "\"1.00\"";
+            case "URL" -> "\"https://example.com\"";
+            case "Email" -> "\"test@example.com\"";
+            default -> "\"sample\"";
+        };
+    }
+
+    String graphQlType(Type<?> type) {
+        if (type instanceof NonNullType nonNullType) {
+            return graphQlType(nonNullType.getType()) + "!";
+        }
+        if (type instanceof ListType listType) {
+            return "[" + graphQlType(listType.getType()) + "]";
+        }
+        return requireTypeName(type).getName();
+    }
+
+    private boolean containsList(Type<?> type) {
+        if (type instanceof NonNullType nonNullType) {
+            return containsList(nonNullType.getType());
+        }
+        return type instanceof ListType;
     }
 }
