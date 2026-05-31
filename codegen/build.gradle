@@ -1,0 +1,43 @@
+plugins {
+    id 'java-library'
+    id 'application'
+    id 'java-gradle-plugin'
+}
+
+description = 'GraphProbe schema-to-test generator'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+dependencies {
+    implementation project(':framework')
+    implementation libs.jackson.databind
+    implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.20.0'
+    implementation 'com.graphql-java:graphql-java:22.0'
+
+    testImplementation libs.junit.jupiter
+    testImplementation libs.assertj.core
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+gradlePlugin {
+    plugins {
+        graphProbeCodegen {
+            id = 'com.snowedunderproductions.graphprobe.codegen'
+            implementationClass = 'com.snowedunderproductions.graphprobe.codegen.gradle.GraphProbeCodegenPlugin'
+        }
+    }
+}
+
+application {
+    mainClass = 'com.snowedunderproductions.graphprobe.codegen.GraphProbeCodegenCli'
+}
+
+test {
+    useJUnitPlatform()
+}

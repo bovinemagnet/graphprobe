@@ -124,6 +124,45 @@ Arbitrary<String> payloads() {
 
 See the link:sample/README.md[`:sample` module] for a complete, offline-runnable example consumer.
 
+
+== Code generation (query tests)
+
+GraphProbe now ships a dedicated `:codegen` module that can generate JUnit 5 test suites from GraphQL schemas.
+
+[source,bash]
+----
+# CLI mode
+./gradlew :codegen:run --args='--schema /absolute/path/schema.graphqls --base-package com.example.generated.graphprobe --output-dir build/generated/graphprobe-test/java --style all'
+
+# Gradle task mode
+./gradlew generateGraphProbeTests
+----
+
+The generated sources default to `build/generated/graphprobe-test/java` and include:
+
+* `GeneratedSchemaSmokeTest.java`
+* `GeneratedPropertyTest.java`
+* `GeneratedFixtureBackedTest.java` (when fixture mappings are configured)
+* `providers/*ArgumentsProvider.java` (when fixture mappings are configured)
+
+You can provide fixture mappings through YAML (`fixtureMappingsFile`) and/or Gradle DSL:
+
+[source,gradle]
+----
+graphProbeCodegen {
+    schemaFiles.from('src/main/resources/schema/schema.graphqls')
+    basePackage = 'com.example.generated.graphprobe'
+    testStyle = 'all'
+
+    fixtureMappings {
+        operation('Query.user') {
+            sql = 'SELECT id FROM users LIMIT 50'
+            argument('id', 'id')
+        }
+    }
+}
+----
+
 == Environment configuration
 
 Create a `.env` file or set environment variables. All endpoints and credentials are resolved through `EnvConfig`.
@@ -160,6 +199,7 @@ GraphProbe is a Gradle multi-project build:
 ----
 graphprobe/
 ├── framework/   # the published library (com.snowedunderproductions:graphprobe)
+├── codegen/     # schema-driven test generator (plugin + CLI)
 └── sample/      # a runnable example consumer
 ----
 
