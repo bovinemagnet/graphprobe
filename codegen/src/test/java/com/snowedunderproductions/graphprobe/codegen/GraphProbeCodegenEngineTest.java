@@ -1,6 +1,7 @@
 package com.snowedunderproductions.graphprobe.codegen;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -179,6 +180,82 @@ class GraphProbeCodegenEngineTest {
             .contains("dgsQueryField(\"User\", \"user\")");
 
         compileGeneratedSources(result);
+    }
+
+    @Test
+    void generatedProviderEscapesColumnNames() throws Exception {
+        Path schema = tempDir.resolve("schema.graphqls");
+        Files.writeString(schema, """
+            type Query {
+              user(id: ID!): User
+            }
+
+            type User {
+              id: ID!
+              name: String
+            }
+            """);
+
+        CodegenConfig config = new CodegenConfig();
+        config.setSchemaFiles(List.of(schema));
+        config.setBasePackage("com.example.generated.graphprobe");
+        config.setOutputDirectory(tempDir.resolve("out"));
+        config.setTestStyle("fixture");
+
+        FixtureMapping mapping = new FixtureMapping();
+        mapping.setSql("SELECT \"weird col\" FROM users LIMIT 10");
+        mapping.getArguments().put("id", "weird\"col\\name");
+        config.getFixtureMappings().put("Query.user", mapping);
+
+        GenerationResult result = new GraphProbeCodegenEngine().generate(config);
+
+        compileGeneratedSources(result);
+    }
+
+    @Test
+    void generatedTestsHandleReservedWordArguments() throws Exception {
+        Path schema = tempDir.resolve("schema.graphqls");
+        Files.writeString(schema, """
+            type Query {
+              thing(class: String, default: Int): User
+            }
+
+            type User {
+              id: ID!
+              name: String
+            }
+            """);
+
+        CodegenConfig config = new CodegenConfig();
+        config.setSchemaFiles(List.of(schema));
+        config.setBasePackage("com.example.generated.graphprobe");
+        config.setOutputDirectory(tempDir.resolve("out"));
+        config.setTestStyle("all");
+
+        FixtureMapping mapping = new FixtureMapping();
+        mapping.setSql("SELECT id FROM things LIMIT 10");
+        mapping.getArguments().put("class", "class_col");
+        config.getFixtureMappings().put("Query.thing", mapping);
+
+        GenerationResult result = new GraphProbeCodegenEngine().generate(config);
+
+        compileGeneratedSources(result);
+    }
+
+    @Test
+    void malformedSchemaErrorIdentifiesTheFile() throws Exception {
+        Path schema = tempDir.resolve("broken.graphqls");
+        Files.writeString(schema, "type Query { this is not valid ###");
+
+        CodegenConfig config = new CodegenConfig();
+        config.setSchemaFiles(List.of(schema));
+        config.setBasePackage("com.example.generated");
+        config.setOutputDirectory(tempDir.resolve("out"));
+        config.setTestStyle("smoke");
+
+        GraphProbeCodegenEngine engine = new GraphProbeCodegenEngine();
+        assertThatThrownBy(() -> engine.generate(config))
+            .hasMessageContaining("broken.graphqls");
     }
 
     private void compileGeneratedSources(GenerationResult result) throws Exception {

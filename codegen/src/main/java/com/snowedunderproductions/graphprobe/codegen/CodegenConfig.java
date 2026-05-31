@@ -31,6 +31,11 @@ public class CodegenConfig {
         return basePackage;
     }
 
+    /**
+     * Sets the base package for generated test sources, for example {@code com.example.generated}.
+     * Must be a valid Java package name; this is enforced when {@link GraphProbeCodegenEngine#generate}
+     * runs, which rejects a malformed value with a descriptive error.
+     */
     public void setBasePackage(String basePackage) {
         this.basePackage = basePackage;
     }
@@ -95,6 +100,11 @@ public class CodegenConfig {
         return testStyle;
     }
 
+    /**
+     * Sets the test style to generate. Must be one of {@code smoke}, {@code property},
+     * {@code fixture}, or {@code all} (case-insensitive); {@code all} is the default.
+     * An unrecognised value is rejected when {@link GraphProbeCodegenEngine#generate} runs.
+     */
     public void setTestStyle(String testStyle) {
         this.testStyle = testStyle;
     }

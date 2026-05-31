@@ -65,6 +65,13 @@ Run generation and tests:
 
 `testStyle` can be `smoke`, `property`, `fixture`, or `all`.
 
+[NOTE]
+====
+Configuration is validated before generation runs.
+`basePackage` must be a valid Java package name, and `testStyle` must be one of `smoke`, `property`, `fixture`, or `all`.
+An unrecognised value fails the build with a descriptive error rather than being silently ignored.
+====
+
 == CLI usage
 
 From the GraphProbe repository, run the generator directly:
