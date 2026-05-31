@@ -13,4 +13,4 @@ pluginManagement {
 
 rootProject.name = 'graphprobe'
 
-include('framework', 'sample')
+include('framework', 'sample', 'codegen')
