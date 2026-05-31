@@ -138,6 +138,24 @@ assertThat(error).contains("Name must not be blank");
 TIP: Construct a single `SimpleGraphQLClient` instance per test class (or per suite) and share it.
 The underlying OkHttp client and connection pool are thread-safe and expensive to create.
 
+==== Built-in resilience
+
+`SimpleGraphQLClient` retries a read-only (idempotent) query once, with jittered backoff, on a transient HTTP 502/503/504 or connect/read timeout.
+Mutations are never retried.
+Retries are surfaced through `GraphQLRequestMetrics`:
+
+[source,java]
+----
+SimpleGraphQLClient client = new SimpleGraphQLClient(endpoint, "Authorization", "");
+
+// A transient 503 on this read-only query is retried transparently.
+String ownerName = client.executeQuery(
+    "{ product(id: \"1\") { owner { name } } }",
+    "$.data.product.owner.name");
+
+// GraphQLRequestMetrics.formatSummary() includes "retries=<n>".
+----
+
 === `client.TestResponse`
 
 `executeQueryOrPossibleSpecificError` returns an immutable `TestResponse` record instead of throwing, so a call that may legitimately succeed or fail can be handled in one place.
@@ -317,21 +335,17 @@ Returns the first matching `JsonNode` (not wrapped in `Optional`).
 
 [source,java]
 ----
-String json = client.executeFullQuery(
-    "{ order(id: \"ord-99\") { lines { product { sku } } status } }"
-);
-JsonNode root = DeepLinkTestHelper.parseJson(json, "order deep link");
+String body = client.executeFullQuery(
+    "{ product(id: \"1\") { id name owner { name email } tags } }");
 
-// Assert a directly nested scalar
-DeepLinkTestHelper.assertFieldEquals(root, "data/order/status", "SHIPPED", "order deep link");
+JsonNode root = DeepLinkTestHelper.parseJson(body, "DeepLinkExample");
 
-// Assert root id fields, then navigate to a nested field (array non-empty check)
-DeepLinkTestHelper.assertDeepLink(
-    json, "order deep link",
-    "data/order/lines/product",
-    "data/order/id", "ord-99"
-);
+DeepLinkTestHelper.assertFieldEquals(root, "data/product/owner/name", "Ada Lovelace", "DeepLinkExample");
+DeepLinkTestHelper.assertFieldExists(root, "data/product/owner/email", "DeepLinkExample");
+DeepLinkTestHelper.assertArrayNotEmpty(root, "data/product/tags", "DeepLinkExample");
 ----
+
+Every check has an `assume*` counterpart that skips (rather than fails) when the nested data is absent — useful when optional data is not populated in every environment.
 
 === `client.PaginationTestHelper`
 
@@ -373,16 +387,32 @@ A fuller overload also accepts a `BiFunction<String, String, String>` JSON calle
 
 [source,java]
 ----
+SimpleGraphQLClient client = new SimpleGraphQLClient(endpoint, "Authorization", "");
+
+BiFunction<String, String, String> jsonCaller = (query, jsonPath) -> {
+    try {
+        return client.simpleJsonCall(query, jsonPath);
+    } catch (IOException e) {
+        throw new UncheckedIOException(e);
+    }
+};
+
 PaginationTestHelper.paginateAndAssert(
-    page -> new ProductsGraphQLQuery.Builder()      // Function<Integer, GraphQLQuery>
-        .page(page)
+    jsonCaller,
+    pageNumber -> new ProductsGraphQLQuery.Builder()
+        .pageNumber(pageNumber)
+        .pageSize(3)
         .build(),
-    new ProductsProjectionRoot<>().id().name().price(),
+    new ProductsProjectionRoot<>().id().name(),
     "$.data.products",
-    "products pagination",                          // testName, used in log output
-    "id", "name"                                    // fields expected on every item
-);
+    "paginatesThroughAllProductPages",
+    3,    // page size
+    10,   // maximum page (inclusive)
+    "id", "name");
 ----
+
+The `ProductsGraphQLQuery` / `ProductsProjectionRoot` types are produced by DGS codegen from a GraphQL schema — see the `sample` module's `build.gradle` for the `generateJava` configuration.
+A convenience overload uses the framework's default page geometry (`GRAPHQL_PAGE_SIZE`, `GRAPHQL_MAX_PAGE`) and a built-in caller.
 
 == Execution profile
 
@@ -480,79 +510,3 @@ At each interval, the listener emits an INFO line containing:
 A final summary is logged when the test plan completes.
 These entries are sufficient to identify whether the pool is undersized for the degree of test parallelism in use, or whether a test is leaking connections (active count never returns to idle).
 
-== Paginating through results
-
-`PaginationTestHelper` iterates pages of a list query, checking the first and
-last element of each page until a partial page is reached. Pass the full JsonPath
-to the list (the helper appends `[0]` and `[pageSize-1]` itself):
-
-[source,java]
-----
-SimpleGraphQLClient client = new SimpleGraphQLClient(endpoint, "Authorization", "");
-
-BiFunction<String, String, String> jsonCaller = (query, jsonPath) -> {
-    try {
-        return client.simpleJsonCall(query, jsonPath);
-    } catch (IOException e) {
-        throw new UncheckedIOException(e);
-    }
-};
-
-PaginationTestHelper.paginateAndAssert(
-    jsonCaller,
-    pageNumber -> new ProductsGraphQLQuery.Builder()
-        .pageNumber(pageNumber)
-        .pageSize(3)
-        .build(),
-    new ProductsProjectionRoot<>().id().name(),
-    "$.data.products",
-    "paginatesThroughAllProductPages",
-    3,    // page size
-    10,   // maximum page (inclusive)
-    "id", "name");
-----
-
-The `ProductsGraphQLQuery` / `ProductsProjectionRoot` types are produced by DGS
-codegen from a GraphQL schema — see the `sample` module's `build.gradle` for the
-`generateJava` configuration. A convenience overload uses the framework's default
-page geometry (`GRAPHQL_PAGE_SIZE`, `GRAPHQL_MAX_PAGE`) and a built-in caller.
-
-== Asserting nested and resolved fields
-
-`DeepLinkTestHelper` validates nested fields in a response. Parse the full body
-once, then navigate with `/`-separated paths (arrays auto-descend to their first
-element):
-
-[source,java]
-----
-String body = client.executeFullQuery(
-    "{ product(id: \"1\") { id name owner { name email } tags } }");
-
-JsonNode root = DeepLinkTestHelper.parseJson(body, "DeepLinkExample");
-
-DeepLinkTestHelper.assertFieldEquals(root, "data/product/owner/name", "Ada Lovelace", "DeepLinkExample");
-DeepLinkTestHelper.assertFieldExists(root, "data/product/owner/email", "DeepLinkExample");
-DeepLinkTestHelper.assertArrayNotEmpty(root, "data/product/tags", "DeepLinkExample");
-----
-
-Every check has an `assume*` counterpart that _skips_ (rather than fails) when the
-nested data is absent — useful when optional data is not populated in every
-environment.
-
-== Built-in resilience
-
-`SimpleGraphQLClient` retries a read-only (idempotent) query once, with jittered
-backoff, on a transient HTTP 502/503/504 or connect/read timeout. Mutations are
-never retried. Retries are surfaced through `GraphQLRequestMetrics`:
-
-[source,java]
-----
-SimpleGraphQLClient client = new SimpleGraphQLClient(endpoint, "Authorization", "");
-
-// A transient 503 on this read-only query is retried transparently.
-String ownerName = client.executeQuery(
-    "{ product(id: \"1\") { owner { name } } }",
-    "$.data.product.owner.name");
-
-// GraphQLRequestMetrics.formatSummary() includes "retries=<n>".
-----
