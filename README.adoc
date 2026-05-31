@@ -1,0 +1,194 @@
+= GraphProbe — the GraphQL Integration Testing Framework
+:toc:
+:toclevels: 3
+:icons: font
+
+GraphProbe is a shared, reusable, domain-agnostic library for writing GraphQL API integration tests on top of Netflix DGS, Spring Boot, and JUnit 5.
+It provides database-driven parameterisation, multiple GraphQL clients, property-based fuzzing, and environment-driven configuration — so teams stop rebuilding the same test infrastructure in every project.
+
+It targets Java 21 and is consumed as a `testImplementation` dependency; no application code ships with it.
+
+== Features
+
+* *Database-driven test data* — `@DynamicSource` parameterisation backed by a shared HikariCP connection pool and a Caffeine result cache.
+* *Multiple GraphQL clients* — a straightforward OkHttp client, a resilient client with retry, throttling and Allure reporting, and a reactive WebFlux/DGS executor.
+* *Property-based testing & fuzzing* — reusable jqwik arbitraries for GraphQL scalars plus security payloads (SQL/NoSQL injection, XSS, path traversal, malformed queries) via `@GraphQLProperty`.
+* *Version-conditional tests* — gate tests by API version with `@EnabledForVersion`.
+* *Observability* — connection-pool monitoring and per-request metrics surfaced into Allure.
+* *Environment-driven configuration* — every endpoint and credential comes from environment variables or a `.env` file; nothing is hardcoded.
+
+== Documentation
+
+The full documentation is an Antora site under `framework/src/docs`. The pages are readable directly on GitHub:
+
+* link:framework/src/docs/modules/ROOT/pages/getting-started.adoc[Getting started] — add GraphProbe to your project and write your first test.
+* link:framework/src/docs/modules/ROOT/pages/architecture.adoc[Architecture] — design principles, package structure, and the responsibility of each layer.
+* link:framework/src/docs/modules/ROOT/pages/database-providers.adoc[Database test providers] — `@DynamicSource`, `BaseArgumentsProvider`, connection pooling and caching.
+* link:framework/src/docs/modules/ROOT/pages/client-tools.adoc[Client test tools] — the GraphQL clients, response helpers, throttling and metrics.
+* link:framework/src/docs/modules/ROOT/pages/property-testing.adoc[Property-based testing] — jqwik arbitraries, fuzzing payloads, and the `@DynamicSource` bridge.
+* link:framework/src/docs/modules/ROOT/pages/test-lifecycle.adoc[Test lifecycle] — pool initialisation, monitoring, and JUnit extensions.
+* link:framework/src/docs/modules/ROOT/pages/environment-variables.adoc[Environment variables] — the complete configuration reference.
+
+[TIP]
+====
+Build the rendered documentation site locally with:
+
+[source,bash]
+----
+./gradlew antora
+----
+
+The output is written to `build/docs/antora/index.html`.
+====
+
+== Installation
+
+Remote publishing is not configured; publish the library to your local Maven repository and consume it from there.
+
+[source,bash]
+----
+./gradlew :framework:publishToMavenLocal
+----
+
+Then add the dependency to your project's `build.gradle`:
+
+[source,gradle]
+----
+dependencies {
+    testImplementation 'com.snowedunderproductions:graphprobe:0.0.1-SNAPSHOT'
+}
+----
+
+JUnit 5, AssertJ and jqwik are exposed transitively, so consuming projects do not need to declare them again.
+
+== Quick start
+
+=== 1. A database-driven test provider
+
+[source,java]
+----
+import com.snowedunderproductions.graphprobe.database.BaseArgumentsProvider;
+
+public class UserArgumentsProvider extends BaseArgumentsProvider {
+    @Override
+    protected String getSQL() {
+        return "SELECT id, username, email FROM users LIMIT 10";
+    }
+
+    @Override
+    protected Arguments extractArguments(ResultSet rs) throws SQLException {
+        return Arguments.of(
+            getSafeString(rs, "id"),
+            getSafeString(rs, "username"),
+            getSafeString(rs, "email")
+        );
+    }
+
+    @Override
+    protected String getCacheKey() {
+        return "users";
+    }
+}
+----
+
+=== 2. A parameterised GraphQL test
+
+[source,java]
+----
+@ParameterizedTest
+@DynamicSource(argumentsProvider = UserArgumentsProvider.class)
+void testGetUser(String id, String username, String email) {
+    GraphQLTestClient client = new GraphQLTestClient();
+    String result = client.executeQuery(
+        String.format("{ user(id: \"%s\") { username email } }", id),
+        "$.data.user.username"
+    );
+    assertThat(result).isEqualTo(username);
+}
+----
+
+=== 3. A property-based test
+
+[source,java]
+----
+@GraphQLProperty(tries = 50)
+void rejectsSqlInjection(@ForAll("payloads") String malicious) {
+    // feed the payload to the API under test and assert it is handled safely
+}
+
+@Provide
+Arbitrary<String> payloads() {
+    return GraphQLFuzzingArbitraries.sqlInjectionPayloads();
+}
+----
+
+See the link:sample/README.md[`:sample` module] for a complete, offline-runnable example consumer.
+
+== Environment configuration
+
+Create a `.env` file or set environment variables. All endpoints and credentials are resolved through `EnvConfig`.
+
+[source,bash]
+----
+# GraphQL endpoint (required by the clients)
+GRAPHQL_URL=https://your-service/graphql
+AUTH_HEADER_NAME=Authorization
+AUTH_HEADER_VALUE=Bearer your-token
+
+# Optional secondary API-key header
+GRAPHPROBE_HEADER_NAME=x-graphprobe-api-key
+GRAPHPROBE_HEADER_VALUE=your-key
+
+# Database (required by the database providers)
+POSTGRES_URL=jdbc:postgresql://localhost:5432/yourdb
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_password
+
+# Optional HikariCP tuning
+HIKARI_MINIMUM_IDLE=2
+HIKARI_MAXIMUM_POOL_SIZE=10
+POSTGRES_SSL_MODE=prefer
+----
+
+The full list is in the link:framework/src/docs/modules/ROOT/pages/environment-variables.adoc[environment variables reference].
+
+== Project structure
+
+GraphProbe is a Gradle multi-project build:
+
+[source,text]
+----
+graphprobe/
+├── framework/   # the published library (com.snowedunderproductions:graphprobe)
+└── sample/      # a runnable example consumer
+----
+
+== Build
+
+[source,bash]
+----
+# Build everything (framework + sample) and run all tests
+./gradlew build
+
+# Publish the library to Maven Local
+./gradlew :framework:publishToMavenLocal
+
+# Run the framework tests with a coverage report
+./gradlew :framework:test :framework:jacocoTestReport
+
+# Run the example consumer
+./gradlew :sample:test
+
+# Build the documentation site
+./gradlew antora
+----
+
+== Requirements
+
+* Java 21+
+* Gradle 8.x (a wrapper is included — use `./gradlew`)
+* PostgreSQL (only for the database-driven providers)
+
+== Licence
+
+Released under the MIT Licence. See link:LICENSE[LICENSE].
