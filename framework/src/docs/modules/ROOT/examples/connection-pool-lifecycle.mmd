@@ -1,0 +1,45 @@
+stateDiagram-v2
+    [*] --> Uninitialised
+
+    Uninitialised --> Initialising : "DatabaseTestLifecycle.beforeAll() OR first BaseArgumentsProvider use"
+
+    state Initialising {
+        [*] --> CreatingDataSource
+        CreatingDataSource --> ValidatingConnection : "HikariConfig.createDataSource()"
+        ValidatingConnection --> [*] : "SELECT 1 succeeds"
+    }
+
+    Initialising --> Ready : "validation succeeds"
+    Initialising --> Failed : "validation / connection error"
+
+    state Ready {
+        [*] --> Serving
+        Serving --> Serving : "getConnection() / executeWithConnection() (read lock)"
+    }
+
+    note right of Ready
+        ConnectionPoolMonitor runs periodic health checks (default 30s).
+        Detects: utilisation above 80 percent, pending threads above 3,
+        failure rate above 5 percent, and potential connection leak risk.
+        Pool is shared across all test classes — double-checked-lock singleton.
+    end note
+
+    Ready --> ShuttingDown : "JVM shutdown hook / shutdown(timeout)"
+
+    note right of ShuttingDown
+        DatabaseTestLifecycle.afterAll() does NOT close the pool.
+        The pool is shared across test classes and is only closed
+        on JVM shutdown via the registered shutdown hook.
+    end note
+
+    state ShuttingDown {
+        [*] --> SuspendingPool
+        SuspendingPool --> DrainingConnections : "suspend pool"
+        DrainingConnections --> ClosingDataSource : "drain active connections"
+        ClosingDataSource --> [*] : "close HikariDataSource"
+    }
+
+    ShuttingDown --> ShutDown : "graceful shutdown (10s timeout)"
+
+    ShutDown --> [*]
+    Failed --> [*]

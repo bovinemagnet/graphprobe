@@ -1,0 +1,16 @@
+/*
+ * GraphProbe
+ * Settings configuration for the Gradle multi-project build
+ */
+
+// Plugin management - MUST be first
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'graphprobe'
+
+include('framework', 'sample')

@@ -1,0 +1,276 @@
+= Environment Variables
+:description: Reference for all environment variables and JVM system properties that configure GraphProbe.
+
+All configuration in GraphProbe is environment-driven.
+The `com.snowedunderproductions.graphprobe.config.EnvConfig` class reads values from a local `.env` file and from the system environment.
+
+TIP: Values declared in the system environment override those in the `.env` file.
+Define project-specific defaults in `.env` and use real environment variables in CI to override them.
+
+One configuration item — `currentVersion`, used by version-gated tests — is a JVM system property, not an environment variable.
+It is documented separately in the <<version-gated-tests>> section below.
+
+.Configuration resolution and gating
+image::config-resolution.svg[Configuration resolution flow]
+
+== Resolving configuration in code
+
+`com.snowedunderproductions.graphprobe.config.EnvConfig` is the single entry point that every other class uses to read configuration.
+Its static accessors apply the precedence above and convert values to the requested type:
+
+`getRequired(key)`::
+Returns the value, or throws `IllegalStateException` with a descriptive message when the variable is absent.
+Use it for variables that have no sensible default, such as `GRAPHQL_URL`.
+
+`get(key)` / `get(key, defaultValue)`::
+Return the value, or `null` (respectively the supplied default) when the variable is absent.
+
+`getOptional(key)`::
+Returns an `Optional<String>` — present when a non-empty value is found, empty otherwise.
+
+`getBoolean(key, default)` / `getInt(key, default)` / `getLong(key, default)`::
+Type-converting accessors that fall back to the given default when the variable is absent or cannot be parsed.
+
+`validateRequired(String... keys)`::
+Checks that every listed key is present and throws a single `IllegalStateException` naming all missing keys — call it at suite start-up to fail fast.
+
+[source,java]
+----
+String url     = EnvConfig.getRequired("GRAPHQL_URL");
+int poolSize   = EnvConfig.getInt("HIKARI_MAXIMUM_POOL_SIZE", 15);
+boolean useCsv = EnvConfig.getBoolean("USE_CSV", false);
+----
+
+== GraphQL client
+
+These variables configure xref:client-tools.adoc[`SimpleGraphQLClient` and `GraphQLTestClient`], including the endpoint, authentication header, and OkHttp timeout behaviour.
+
+[cols="2,1,4", options="header"]
+|===
+| Variable | Default | Description
+
+| `GRAPHQL_URL`
+| (required)
+| GraphQL endpoint URL that the client posts requests to.
+No usable default is provided; omitting this variable will cause the client to fail at initialisation.
+
+| `AUTH_HEADER_NAME`
+| `Authorization`
+| Name of the HTTP header added to every request for authentication.
+
+| `AUTH_HEADER_VALUE`
+| (empty)
+| Value of the authentication header.
+When blank, the header is omitted entirely from requests.
+
+| `GRAPHQL_CONNECT_TIMEOUT_SECONDS`
+| `45`
+| OkHttp connect timeout in seconds.
+
+| `GRAPHQL_READ_TIMEOUT_SECONDS`
+| `45`
+| OkHttp read timeout in seconds.
+
+| `GRAPHQL_WRITE_TIMEOUT_SECONDS`
+| `45`
+| OkHttp write timeout in seconds.
+|===
+
+== Reactive executor
+
+These variables are read by the reactive Spring WebFlux / Netflix DGS executor, xref:client-tools.adoc[`GraphQLTestExecutor`].
+They are only relevant to test projects that use that client.
+
+[cols="2,1,4", options="header"]
+|===
+| Variable | Default | Description
+
+| `GRAPHPROBE_HEADER_NAME`
+| `x-graphprobe-api-key`
+| Name of the GraphProbe API-key header added by the reactive executor.
+
+| `GRAPHPROBE_HEADER_VALUE`
+| (empty)
+| Value of the GraphProbe API-key header. When blank, the header is omitted.
+
+| `API_GW_HEADER_NAME`
+| `x-api-key`
+| Name of the API-gateway header added by `simpleCallWithToken`.
+
+| `API_GW_HEADER_VALUE`
+| (empty)
+| Value of the API-gateway header. When blank, the header is omitted.
+
+| `DEFAULT_TEST_TIMEOUT`
+| `30`
+| Default per-request timeout in seconds for reactive calls.
+
+| `DEFAULT_TEST_LONG_TIMEOUT`
+| `60`
+| Extended per-request timeout in seconds for reactive calls known to be slow.
+|===
+
+== Concurrency and metrics
+
+These variables control in-flight request throttling and test-attribution in `GraphQLRequestThrottle` and `GraphQLRequestMetrics`.
+
+[cols="2,1,4", options="header"]
+|===
+| Variable | Default | Description
+
+| `GRAPHQL_MAX_CONCURRENT`
+| `16`
+| Maximum number of GraphQL requests in flight simultaneously across all forks and threads.
+Set to `0` to disable throttling entirely.
+
+| `GRAPHQL_TEST_PACKAGE_PREFIX`
+| (empty)
+| Fully-qualified-name prefix that a stack frame must start with in order to be attributed to a test class in `GraphQLRequestMetrics`.
+When empty, any class whose simple name ends in `Test` or `IT` is attributed.
+|===
+
+== Pagination
+
+These variables configure `PaginationTestHelper`, which iterates through paged GraphQL responses during tests.
+
+[cols="2,1,4", options="header"]
+|===
+| Variable | Default | Description
+
+| `GRAPHQL_FIRST_PAGE`
+| `0`
+| Index of the first page to request.
+
+| `GRAPHQL_PAGE_SIZE`
+| `100`
+| Number of items requested per page iteration.
+
+| `GRAPHQL_MAX_PAGE`
+| `10`
+| Maximum number of pages to iterate.
+Automatically clamped to `3` when the FAST execution profile is active.
+|===
+
+== Execution profile
+
+The execution profile controls iteration counts, page caps, and SQL limits to allow a faster feedback loop during development.
+
+[cols="2,1,4", options="header"]
+|===
+| Variable | Default | Description
+
+| `ITEST_PROFILE`
+| `DEFAULT` (when unset)
+| Set to `fast` to activate the FAST profile, which trims iteration counts, caps pages at `3`, and reduces SQL limits.
+Two equivalent overrides are also recognised: the `test.profile` JVM system property, or the Gradle project property `-Ptest.profile=fast` (which the build wires into `test.profile`).
+|===
+
+== Connection-pool diagnostics
+
+[cols="2,1,4", options="header"]
+|===
+| Variable | Default | Description
+
+| `HIKARI_STATS_INTERVAL_SECONDS`
+| `30`
+| Interval in seconds at which the opt-in `HikariStatsListener` logs HikariCP pool statistics.
+The listener must be explicitly registered; this variable has no effect otherwise.
+|===
+
+== Database connection pool
+
+IMPORTANT: The three `POSTGRES_*` variables marked as required below are needed only when the database-backed test data providers or the HikariCP connection pool are in use.
+Projects that rely solely on CSV providers or the GraphQL client do not need a database configuration.
+
+=== Required variables
+
+[cols="2,1,4", options="header"]
+|===
+| Variable | Default | Description
+
+| `POSTGRES_URL`
+| (required)
+| JDBC connection URL for the PostgreSQL database.
+
+| `POSTGRES_USER`
+| (required)
+| Database user name.
+
+| `POSTGRES_PASSWORD`
+| (required)
+| Database user password.
+|===
+
+=== Pool tuning
+
+The defaults below are intentionally more aggressive than HikariCP's own defaults, favouring fast failure and early leak detection in a test environment.
+
+[cols="2,1,4", options="header"]
+|===
+| Variable | Default | Description
+
+| `HIKARI_MINIMUM_IDLE`
+| `3`
+| Minimum number of idle connections maintained in the pool.
+
+| `HIKARI_MAXIMUM_POOL_SIZE`
+| `15`
+| Maximum total connections (idle + active) in the pool.
+
+| `HIKARI_CONNECTION_TIMEOUT_MS`
+| `10000`
+| Milliseconds to wait for a connection from the pool before throwing an exception.
+Lower than HikariCP's own default to surface connection failures quickly.
+
+| `HIKARI_IDLE_TIMEOUT_MS`
+| `600000`
+| Milliseconds an idle connection may remain in the pool before being retired.
+
+| `HIKARI_MAX_LIFETIME_MS`
+| `1800000`
+| Maximum lifetime in milliseconds of a connection in the pool.
+
+| `HIKARI_VALIDATION_TIMEOUT_MS`
+| `3000`
+| Milliseconds allowed for the pool to validate a connection before treating it as unusable.
+
+| `HIKARI_LEAK_DETECTION_THRESHOLD_MS`
+| `20000`
+| Milliseconds before a connection checked out of the pool is considered a potential leak.
+Set lower than HikariCP's own default to surface leaks sooner during tests.
+
+| `HIKARI_POOL_NAME`
+| `GraphQLTestPool`
+| Name assigned to the HikariCP pool, visible in logs and JMX.
+
+| `POSTGRES_SSL_MODE`
+| `prefer`
+| PostgreSQL SSL negotiation mode passed to the JDBC driver.
+|===
+
+== Test data providers
+
+[cols="2,1,4", options="header"]
+|===
+| Variable | Default | Description
+
+| `USE_CSV`
+| (unset — database)
+| Set to `true` to load `@DynamicSource` test data from a CSV classpath resource instead of the database-backed provider.
+When unset or set to any value other than `true`, the database provider is used.
+|===
+
+[#version-gated-tests]
+== Version-gated tests
+
+This item is a JVM system property, not an environment variable, and is not read by `EnvConfig`.
+
+[cols="2,1,4", options="header"]
+|===
+| System property | Default | Description
+
+| `currentVersion`
+| `0.0.0`
+| The version string evaluated by `@EnabledForVersion` to decide whether a version-gated test should run.
+Pass it on the JVM command line, for example `-DcurrentVersion=1.4.0`, or set it in your Gradle test task via `systemProperty 'currentVersion', project.version`.
+|===

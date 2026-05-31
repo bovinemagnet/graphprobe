@@ -1,0 +1,92 @@
+# GraphProbe - Version Catalog
+# Centralised dependency version management
+
+[versions]
+# Core Framework
+java = "21"
+spring-boot = "4.0.6"
+spring-graphql = "1.3.4"
+dgs-platform = "10.4.0"
+dgs-codegen = "8.0.4"
+
+# Database & Connection Pooling
+postgresql = "42.7.8"
+hikari = "6.3.0"
+
+# Testing
+junit = "6.1.0"
+assertj = "3.27.6"
+mockito = "5.20.0"
+jqwik = "1.9.2"
+
+# Utilities
+caffeine = "3.2.2"
+jackson = "2.20.0"
+okhttp = "5.2.1"
+guava = "33.5.0-jre"
+semver = "0.10.2"
+slf4j = "2.0.9"
+logback = "1.5.12"
+dotenv = "3.2.0"
+allure = "2.33.0"
+
+[libraries]
+# Spring Framework
+spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
+spring-boot-starter-webflux = { module = "org.springframework.boot:spring-boot-starter-webflux" }
+spring-graphql-test = { module = "org.springframework.graphql:spring-graphql-test", version.ref = "spring-graphql" }
+
+# Netflix DGS GraphQL
+dgs-client = { module = "com.netflix.graphql.dgs:graphql-dgs-client", version.ref = "dgs-platform" }
+# Codegen base types (GraphQLQuery / GraphQLQueryRequest / BaseSubProjectionNode) used by
+# PaginationTestHelper. These are NOT in graphql-dgs-client; they live in the shared codegen core.
+dgs-codegen-shared-core = { module = "com.netflix.graphql.dgs.codegen:graphql-dgs-codegen-shared-core", version.ref = "dgs-codegen" }
+
+# Database
+postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
+hikari = { module = "com.zaxxer:HikariCP", version.ref = "hikari" }
+
+# Testing Framework
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
+junit-jupiter-params = { module = "org.junit.jupiter:junit-jupiter-params", version.ref = "junit" }
+assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+mockito-core = { module = "org.mockito:mockito-core", version.ref = "mockito" }
+mockito-junit-jupiter = { module = "org.mockito:mockito-junit-jupiter", version.ref = "mockito" }
+jqwik-engine = { module = "net.jqwik:jqwik-engine", version.ref = "jqwik" }
+jqwik-api = { module = "net.jqwik:jqwik-api", version.ref = "jqwik" }
+jqwik-web = { module = "net.jqwik:jqwik-web", version.ref = "jqwik" }
+
+# Utilities
+caffeine = { module = "com.github.ben-manes.caffeine:caffeine", version.ref = "caffeine" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+guava = { module = "com.google.guava:guava", version.ref = "guava" }
+semver = { module = "com.github.zafarkhaja:java-semver", version.ref = "semver" }
+dotenv = { module = "io.github.cdimascio:dotenv-java", version.ref = "dotenv" }
+
+# Logging
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+
+# Reporting (Allure API for @Step/attachments/metrics instrumentation)
+allure-java-commons = { module = "io.qameta.allure:allure-java-commons", version.ref = "allure" }
+
+[bundles]
+# Testing Core
+junit = ["junit-jupiter", "junit-jupiter-api", "junit-jupiter-params"]
+assertions = ["assertj-core"]
+mocking = ["mockito-core", "mockito-junit-jupiter"]
+jqwik = ["jqwik-engine", "jqwik-api", "jqwik-web"]
+
+# Database Testing
+database = ["postgresql", "hikari", "caffeine"]
+
+# GraphQL Testing
+graphql = ["spring-graphql-test", "spring-boot-starter-webflux", "dgs-client", "dgs-codegen-shared-core"]
+
+# Utilities
+utils = ["jackson-databind", "okhttp", "guava", "semver", "dotenv"]
+
+[plugins]
+# Gradle plugins are managed in the build.gradle file

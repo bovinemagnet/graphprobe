@@ -1,0 +1,231 @@
+/*
+ * GraphProbe - Library Build Configuration
+ *
+ * This module is the reusable testing framework for GraphQL API integration tests.
+ * It provides database-driven test providers, GraphQL client utilities, custom
+ * annotations, and performance optimisation infrastructure. It is published as
+ * com.snowedunderproductions:graphprobe and consumed by other test projects.
+ *
+ * Group and version are configured for all modules in the root build.gradle.
+ */
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'jacoco'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+
+    // Generate JavaDoc and sources JARs for Maven Central compliance
+    withJavadocJar()
+    withSourcesJar()
+
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+// Compiler configuration for Java 21
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs.addAll([
+        '-parameters',              // Preserve parameter names for reflection
+        '-Xlint:unchecked',        // Warn about unchecked operations
+        '-Xlint:deprecation'       // Warn about deprecated API usage
+    ])
+
+    // Build performance: incremental compilation in a forked compiler daemon
+    options.incremental = true
+    options.fork = true
+    options.forkOptions.jvmArgs = ['-Xmx1g']
+}
+
+// Dependency Management using Version Catalog
+dependencies {
+    // Platform BOMs for version alignment
+    api platform(libs.spring.boot.bom)
+
+    // Testing Framework - Core API
+    api libs.bundles.junit
+    api libs.bundles.assertions
+    api libs.bundles.jqwik
+
+    // JUnit Platform launcher: needed only to compile the optional
+    // HikariStatsListener (a TestExecutionListener). Consumers already have the
+    // launcher on their test runtime, so compileOnly keeps it off the published API.
+    compileOnly 'org.junit.platform:junit-platform-launcher'
+
+    // Database Infrastructure - Core API
+    api libs.bundles.database
+
+    // GraphQL Testing - Core API
+    api libs.bundles.graphql
+
+    // Utilities - Core API
+    api libs.bundles.utils
+
+    // Reporting - Core API (Allure instrumentation used by client tools)
+    api libs.allure.java.commons
+
+    // Logging - Compile-only (consumer provides implementation)
+    compileOnly libs.slf4j.api
+
+    // Test Dependencies (for framework unit tests)
+    testImplementation libs.bundles.mocking
+    testImplementation libs.slf4j.api
+    // Logback is the SLF4J binding at test runtime and is also exercised directly by
+    // GraphQLMetricsExtensionTest (ListAppender) to assert on Allure's lifecycle logging.
+    testImplementation libs.logback.classic
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testRuntimeOnly libs.jqwik.engine
+}
+
+// Testing Configuration
+test {
+    useJUnitPlatform()
+
+    // Test execution settings
+    maxParallelForks = Runtime.runtime.availableProcessors().intdiv(2) ?: 1
+
+    // Memory settings for tests
+    minHeapSize = "256m"
+    maxHeapSize = "1g"
+
+    // Test logging
+    testLogging {
+        events "passed", "skipped", "failed"
+        showStandardStreams = false
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
+        exceptionFormat = "full"
+    }
+
+    // Generate test reports
+    reports {
+        junitXml.required = true
+        html.required = true
+    }
+
+    // Fail fast on first test failure during development
+    if (project.hasProperty('failFast')) {
+        failFast = true
+    }
+}
+
+// JaCoCo Code Coverage Configuration
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+jacocoTestReport {
+    dependsOn test
+
+    reports {
+        xml.required = true
+        csv.required = false
+        html.required = true
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/test/html')
+    }
+
+    executionData fileTree(layout.buildDirectory.dir('jacoco')).include("**/*.exec")
+
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: [
+                '**/generated/**',
+                '**/build/**'
+            ])
+        }))
+    }
+}
+
+// JavaDoc Configuration
+javadoc {
+    options {
+        encoding = 'UTF-8'
+        charSet = 'UTF-8'
+        links(
+            'https://docs.oracle.com/en/java/javase/21/docs/api/',
+            'https://docs.spring.io/spring-framework/docs/current/javadoc-api/',
+            'https://javadoc.io/doc/org.junit.jupiter/junit-jupiter-api/latest/'
+        )
+
+        // Suppress warnings for missing JavaDoc
+        addStringOption('Xdoclint:none', '-quiet')
+    }
+
+    // Fail build on JavaDoc errors
+    failOnError = false
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            groupId = project.group
+            artifactId = 'graphprobe'
+            version = project.version
+            from components.java
+        }
+    }
+    repositories {
+        // Publish to Maven Local for development/testing
+        mavenLocal()
+    }
+}
+
+// Custom Tasks for Development Workflow
+
+task checkDependencies {
+    description = 'Display dependency tree for debugging'
+    group = 'help'
+
+    doLast {
+        println "\n=== API Dependencies ==="
+        configurations.api.allDependencies.each { dep ->
+            println "  ${dep.group}:${dep.name}:${dep.version}"
+        }
+
+        println "\n=== Implementation Dependencies ==="
+        configurations.implementation.allDependencies.each { dep ->
+            println "  ${dep.group}:${dep.name}:${dep.version}"
+        }
+    }
+}
+
+task printVersion {
+    description = 'Print the framework version'
+    group = 'help'
+
+    doLast {
+        println "\n=== GraphProbe ==="
+        println "Version: ${version}"
+        println "Group: ${project.group}"
+        println "Java Version: ${java.sourceCompatibility}"
+        println "==================\n"
+    }
+}
+
+// Build lifecycle hooks
+tasks.named('build') {
+    dependsOn('test', 'jacocoTestReport')
+
+    doLast {
+        println "\n✅ GraphProbe v${version} built successfully!"
+        println "📦 Artifacts: ${layout.buildDirectory.get()}/libs/"
+        println "📊 Test Report: file://${layout.buildDirectory.get()}/reports/tests/test/index.html"
+        println "📈 Coverage Report: file://${layout.buildDirectory.get()}/reports/jacoco/test/html/index.html"
+    }
+}
+
+tasks.named('publishToMavenLocal') {
+    doLast {
+        println "\n✅ Published to Maven Local:"
+        println "   ${project.group}:graphprobe:${version}"
+        println "\n📦 Add to your project:"
+        println "   testImplementation '${project.group}:graphprobe:${version}'"
+    }
+}

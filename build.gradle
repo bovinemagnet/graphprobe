@@ -1,0 +1,42 @@
+/*
+ * GraphProbe - Root Aggregator Build
+ *
+ * This is a Gradle multi-project build:
+ *   :framework  - the reusable GraphQL integration-test library (published artifact)
+ *   :sample     - an example consumer demonstrating how to use the framework
+ *
+ * Shared configuration (group, version, repositories) is applied to every module
+ * here. Module-specific configuration lives in each module's build.gradle.
+ */
+
+allprojects {
+    group = project.findProperty('group') ?: 'com.snowedunderproductions'
+    version = project.findProperty('version') ?: '0.0.1-SNAPSHOT'
+
+    repositories {
+        mavenCentral()
+        mavenLocal()
+    }
+}
+
+// Antora Documentation Build
+// Builds the AsciiDoc/Antora documentation under framework/src/docs into
+// build/docs/antora. Runs the Antora CLI (resolved from node_modules via npx)
+// against the playbook at the repository root.
+tasks.register('antora', Exec) {
+    description = 'Build the Antora documentation site (framework/src/docs)'
+    group = 'documentation'
+
+    workingDir = projectDir
+    commandLine 'npx', 'antora', 'antora-playbook.yml'
+
+    doLast {
+        println "\n✅ Antora documentation built: file://${projectDir}/build/docs/antora/index.html"
+    }
+}
+
+// Wrapper Configuration
+wrapper {
+    gradleVersion = '8.11.1'
+    distributionType = Wrapper.DistributionType.BIN
+}

@@ -1,0 +1,45 @@
+= GraphProbe — the GraphQL Integration Testing Framework
+:description: A shared, reusable, domain-agnostic library for writing GraphQL API integration tests on top of Netflix DGS, Spring Boot, and JUnit 5.
+
+GraphProbe is the GraphQL Integration Testing Framework: a shared library for teams that write integration tests against GraphQL APIs and want to avoid rebuilding the same test infrastructure in every project.
+It ships as a single Maven dependency and provides database-driven parameterisation, multiple GraphQL clients, property-based fuzzing, and environment-driven configuration — all domain-agnostic and ready to adapt to any GraphQL backend.
+
+The framework targets Java 21, Netflix DGS, and Spring Boot, and is consumed as a `testImplementation` dependency.
+No application code ships with it.
+
+== Key capabilities
+
+* *Database-driven parameterised tests* via the `@DynamicSource` annotation, backed by a shared HikariCP connection pool and a Caffeine result cache with a five-minute TTL.
+* *Three GraphQL test clients*: a basic OkHttp client (`GraphQLTestClient`) for straightforward queries; a resilient client (`SimpleGraphQLClient`) with concurrency throttling, retry-with-backoff, per-request metrics, and Allure report attachments; and a reactive Spring WebFlux / Netflix DGS executor (`GraphQLTestExecutor`) for reactive pipelines.
+* *Property-based testing and security fuzzing* with jqwik — reusable arbitrary generators for GraphQL scalars, injection and edge-case payloads (SQL, NoSQL, XSS, path traversal), and database-sampled values for realistic property tests.
+* *Environment-driven configuration* with `.env` file support via dotenv-java; system environment variables take precedence, so CI overrides are straightforward.
+* *Version-conditional test execution* with `@EnabledForVersion`, allowing tests to be gated on a `currentVersion` system property evaluated against semantic version constraints.
+* *Connection-pool health monitoring* and per-test-class request metrics that surface pool statistics and in-flight request counts without any extra instrumentation in consuming projects.
+
+== Architecture at a glance
+
+.High-level component architecture
+image::architecture-overview.svg[Layered architecture of the framework]
+
+The framework is organised in layers: test code at the top drives JUnit 5 extensions and the annotation layer, which dispatches to the client, database, and jqwik layers, and those in turn talk to the external GraphQL endpoint and the PostgreSQL database at the bottom.
+See xref:architecture.adoc[the architecture page] for a detailed walkthrough of each layer and the key design decisions.
+
+== Where to next
+
+xref:getting-started.adoc[Getting started]::
+Add the Maven dependency, set your environment variables, and write your first parameterised integration test.
+
+xref:environment-variables.adoc[Environment variables]::
+Full reference for every environment variable and JVM system property, `.env` resolution order, execution profiles, and version gating.
+
+xref:database-providers.adoc[Database test providers]::
+How `@DynamicSource` works, how to extend `BaseArgumentsProvider`, and how the HikariCP pool and Caffeine cache are managed.
+
+xref:client-tools.adoc[Client test tools]::
+The three available clients, the concurrency throttle, request metrics, deep-link assertions, and pagination helpers.
+
+xref:property-testing.adoc[Property-based testing]::
+jqwik integration, the `GraphQLArbitraries` and `GraphQLFuzzingArbitraries` factories, database-sampled arbitraries, and composing complex test inputs.
+
+xref:test-lifecycle.adoc[Test lifecycle]::
+JUnit 5 extensions, listeners, the execution profile, and how the framework integrates with Allure reporting.

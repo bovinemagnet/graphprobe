@@ -1,0 +1,136 @@
+flowchart TD
+
+    %% ─── Layer 1: Test code ──────────────────────────────────────────────────
+    subgraph TC["Test code"]
+        TEST["@ParameterizedTest / @GraphQLProperty test methods"]
+    end
+
+    %% ─── Layer 2: Annotations & conditions ──────────────────────────────────
+    subgraph AN["Annotations & conditions"]
+        DYNSRC["@DynamicSource"]
+        DYNPROV["DynamicSourceProvider"]
+        GQLPROP["@GraphQLProperty (jqwik @Property)"]
+        ENVER["@EnabledForVersion"]
+        ENVCOND["EnabledForVersionCondition (ExecutionCondition)"]
+        GQLARB["@GraphQLArbitrary (documentation only)"]
+
+        DYNSRC --> DYNPROV
+        ENVER --> ENVCOND
+    end
+
+    %% ─── Layer 3: JUnit 5 extensions & listeners ─────────────────────────────
+    subgraph JU["JUnit 5 extensions & listeners"]
+        DBLC["DatabaseTestLifecycle (BeforeAll/AfterAll)"]
+        GQLMET["GraphQLMetricsExtension (AfterAll to Allure)"]
+        HIKSTAT["HikariStatsListener (TestExecutionListener)"]
+    end
+
+    %% ─── Layer 4: GraphQL client layer ──────────────────────────────────────
+    subgraph CL["GraphQL client layer"]
+        SGQL["SimpleGraphQLClient (resilient: OkHttp)"]
+        THROTTLE["GraphQLRequestThrottle (semaphore)"]
+        METRICS["GraphQLRequestMetrics (per-class stats)"]
+        BASIC["GraphQLTestClient (basic OkHttp)"]
+        EXEC["GraphQLTestExecutor (Spring WebFlux / DGS)"]
+        TRESP["TestResponse (result envelope)"]
+
+        SGQL --> THROTTLE
+        SGQL --> METRICS
+    end
+
+    %% ─── Layer 5: Test helpers ───────────────────────────────────────────────
+    subgraph HLP["Test helpers"]
+        PAGINH["PaginationTestHelper"]
+        DLINKH["DeepLinkTestHelper (nested JSON asserts)"]
+
+        PAGINH --> SGQL
+    end
+
+    %% ─── Layer 6: Arguments providers ───────────────────────────────────────
+    subgraph AP["Arguments providers"]
+        CSVLDR["CSV resource loader"]
+        BASEAP["BaseArgumentsProvider (abstract, DB)"]
+        JQPROV["JqwikArgumentsProvider (Arbitrary to Arguments bridge)"]
+
+        DYNPROV --> CSVLDR
+        DYNPROV --> BASEAP
+    end
+
+    %% ─── Layer 7: jqwik arbitraries ─────────────────────────────────────────
+    subgraph JQ["jqwik arbitraries"]
+        GQLARBGEN["GraphQLArbitraries (scalars/patterns)"]
+        GQLFUZZ["GraphQLFuzzingArbitraries (injection/edge cases)"]
+        DBARBPROV["DatabaseArbitraryProvider (DB rows to Arbitrary)"]
+    end
+
+    %% ─── Layer 8: Database layer ─────────────────────────────────────────────
+    subgraph DB["Database layer"]
+        CAFFEINE["Caffeine cache (5 min TTL)"]
+        DCM["DatabaseConnectionManager (singleton)"]
+        HKCONF["HikariConfig (factory)"]
+        HKDS["HikariDataSource (pool)"]
+        CPMON["ConnectionPoolMonitor (health checks/leak detection)"]
+
+        BASEAP --> CAFFEINE
+        BASEAP --> DCM
+        DBARBPROV --> DCM
+        DCM --> HKCONF --> HKDS
+        CPMON -. monitors .-> HKDS
+        HIKSTAT --> CPMON
+        DBLC --> DCM
+    end
+
+    %% ─── Layer 9: Configuration ──────────────────────────────────────────────
+    subgraph CFG["Configuration"]
+        ENVCFG["EnvConfig (.env + system env)"]
+        TPROF["TestProfile (DEFAULT vs FAST)"]
+    end
+
+    %% ─── Layer 10: External systems ─────────────────────────────────────────
+    subgraph EXT["External systems"]
+        PGDB["PostgreSQL database"]
+        GQLEP["GraphQL endpoint"]
+    end
+
+    %% ─── Cross-layer dependency arrows ──────────────────────────────────────
+
+    %% Test code depends on annotations, extensions, clients, helpers, providers, jqwik
+    TEST --> DYNSRC
+    TEST --> GQLPROP
+    TEST --> ENVER
+    TEST --> SGQL
+    TEST --> BASIC
+    TEST --> EXEC
+    TEST --> PAGINH
+    TEST --> DLINKH
+    TEST --> JQPROV
+    TEST --> GQLARBGEN
+    TEST --> GQLFUZZ
+
+    %% Extensions/listeners down to clients & DB
+    GQLMET --> METRICS
+
+    %% jqwik arbitraries used by providers and tests
+    JQPROV --> GQLARBGEN
+    JQPROV --> GQLFUZZ
+
+    %% Client layer results
+    SGQL --> TRESP
+    BASIC --> TRESP
+    EXEC --> TRESP
+
+    %% Representative EnvConfig reads (avoid wiring every node)
+    SGQL --> ENVCFG
+    BASIC --> ENVCFG
+    HKCONF --> ENVCFG
+    BASEAP --> ENVCFG
+
+    %% External system connections
+    HKDS --> PGDB
+    SGQL --> GQLEP
+    BASIC --> GQLEP
+    EXEC --> GQLEP
+
+    %% ─── Styling: highlight the architectural lynchpin ───────────────────────
+    classDef singleton fill:#d4600a,color:#fff,stroke:#a34508,stroke-width:2px
+    class DCM singleton

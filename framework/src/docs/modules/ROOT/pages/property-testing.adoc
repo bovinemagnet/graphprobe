@@ -1,0 +1,246 @@
+= Property-based testing
+:description: How to use the jqwik integration to generate inputs, fuzz security payloads, sample real database values, and bridge property tests into the @DynamicSource mechanism.
+
+Property-based testing turns the question "does this work for these specific inputs?" into "does this work for any valid input from this domain?"
+Instead of writing one test per input value, you declare a generator — an _arbitrary_ — that describes the space of legal inputs, and the framework runs your test many times, each time drawing a fresh sample.
+When a failure occurs, jqwik automatically shrinks it to the smallest counterexample that still fails.
+
+The framework's `com.snowedunderproductions.graphprobe.jqwik` package provides ready-made arbitraries for GraphQL scalar types, security fuzzing payloads, and real database values, together with two complementary ways to drive them: native jqwik `@Property` tests and the familiar JUnit `@ParameterizedTest` + `@DynamicSource` mechanism.
+
+== Two ways to generate inputs
+
+.Property-based testing flow
+image::jqwik-property-testing-flow.svg[jqwik property testing flow]
+
+The same arbitrary sources feed both execution paths.
+
+Path A — native jqwik::
+A `@GraphQLProperty`-annotated method declares its parameters with `@ForAll("providerMethod")`.
+A sibling `@Provide` method returns the matching `Arbitrary`.
+jqwik is fully in control: it draws samples, tracks seen values, and shrinks on failure.
+This is the natural choice when you want full shrinking behaviour and fine control over `tries`, `seed`, or `edgeCases` configuration.
+
+Path B — `@DynamicSource` bridge::
+A `JqwikArgumentsProvider` subclass wraps one or more arbitraries and produces a fixed number of sampled `Arguments` rows.
+JUnit 5 then runs those rows as an ordinary `@ParameterizedTest @DynamicSource` test, with no jqwik involvement at execution time.
+This path fits suites that already rely heavily on the database provider pattern and want generated data in the same style without adopting jqwik's runner model.
+
+== A first property test
+
+The simplest way to use the framework is a native jqwik property test marked with `@GraphQLProperty`.
+The annotation is a meta-annotation that wraps jqwik's `@Property`; its attributes mirror those of `@Property` with GraphQL-oriented defaults:
+
+[cols="1,1,2", options="header"]
+|===
+|Attribute |Default |Effect
+
+|`tries`
+|100
+|Number of times jqwik calls the test method with fresh inputs.
+
+|`seed`
+|_(empty — random)_
+|When set, fixes the random seed so the same sequence of inputs is generated on every run.
+
+|`shrinking`
+|`BOUNDED`
+|Controls how aggressively jqwik searches for a minimal counterexample on failure.
+
+|`maxDiscardRatio`
+|5
+|Maximum ratio of discarded to accepted samples before jqwik aborts with an error.
+
+|`generation`
+|`AUTO`
+|Whether to use exhaustive generation when the domain is small enough, or always randomise.
+
+|`edgeCases`
+|`MIXIN`
+|Whether to mix known edge-case values (zero, empty string, `MAX_VALUE`, etc.) into the generated stream.
+|===
+
+A complete first example using `GraphQLArbitraries.graphqlId()`:
+
+[source,java]
+----
+@GraphQLProperty
+void userQueryAcceptsGeneratedIds(@ForAll("userIds") String userId) {
+    GraphQLTestClient client = new GraphQLTestClient();
+    String result = client.executeQuery(
+        String.format("{ user(id: \"%s\") { name } }", userId),
+        "$.data.user.name");
+    assertThat(result).isNotEmpty();
+}
+
+@Provide
+Arbitrary<String> userIds() {
+    return GraphQLArbitraries.graphqlId();
+}
+----
+
+jqwik calls `userQueryAcceptsGeneratedIds` 100 times (the default `tries`), drawing a different `userId` on each call.
+If any call throws or fails an assertion, jqwik shrinks the failing `userId` to a minimal counterexample and reports it.
+
+NOTE: `@GraphQLProperty` sits in `com.snowedunderproductions.graphprobe.jqwik.annotations`.
+`@GraphQLArbitrary` in the same package is a documentation-only companion annotation — it records which `@Provide` method supplies an arbitrary, along with `description`, `domain`, `includesEdgeCases`, and a `source` enum (`GENERATED`, `DATABASE`, `CSV`, `EXTERNAL`, `MIXED`).
+It is not wired into generation and has no runtime effect.
+
+== GraphQL arbitraries
+
+`GraphQLArbitraries` in `com.snowedunderproductions.graphprobe.jqwik.arbitraries` is a factory of reusable jqwik `Arbitrary` generators covering the common GraphQL scalar and structural types.
+
+Scalar types::
+* `graphqlId()` — an even mix of numeric, UUID, and alphanumeric identifiers — the three shapes most GraphQL APIs use for the `ID` scalar.
+* `graphqlString()` / `graphqlString(min, max)` — strings free of control characters; length bounds are optional.
+* `graphqlInt()` / `graphqlInt(min, max)` — integers within an optionally bounded range.
+* `graphqlFloat()` / `graphqlFloat(min, max, scale)` — floating-point values with configurable precision.
+* `graphqlBoolean()` — `true` or `false`.
+
+Patterns::
+* `nullable(arbitrary)` — wraps any other arbitrary so that it occasionally produces `null`, representing nullable GraphQL fields.
+* `uuidString()`, `numericId()`, `alphanumericId()` — single-shape identifier generators when a specific format is needed.
+
+Temporal::
+* `isoTimestamp()`, `isoDate()`, `isoDateTime()` — ISO 8601 formatted strings that match the temporal scalar conventions common in GraphQL APIs.
+
+Pagination::
+* `paginationLimit()`, `paginationOffset()` — integer values appropriate for offset-based pagination arguments.
+* `relayCursor()` — opaque cursor strings suitable for Relay-style connection pagination.
+
+Web::
+* `email()`, `url()`, `ipv4()` — well-formed strings for contact and network fields.
+
+Collections::
+* `graphqlList(arbitrary)` — a possibly-empty list of values drawn from the given arbitrary.
+* `nonEmptyGraphqlList(arbitrary)` — same, but always produces at least one element.
+
+== Security fuzzing
+
+`GraphQLFuzzingArbitraries` in `com.snowedunderproductions.graphprobe.jqwik.arbitraries` provides payload generators designed to surface injection vulnerabilities and boundary failures.
+
+Injection attacks::
+`sqlInjectionPayloads()`, `noSqlInjectionPayloads()`, `xssPayloads()`, `pathTraversalPayloads()`, `commandInjectionPayloads()`
+
+Edge cases and resource exhaustion::
+`extremelyLongStrings()`, `specialUnicodeCharacters()`, `numericBoundaryValues()`
+
+GraphQL-specific attacks::
+`deeplyNestedQueries(maxDepth)`, `malformedGraphQL()`, `circularReferences()`, `batchQueryAttack(batchSize)`, `aliasMultiplication(aliasCount)`
+
+A typical fuzzing property test:
+
+[source,java]
+----
+@GraphQLProperty(tries = 50)
+void rejectsInjectionAttempts(@ForAll("payloads") String malicious) {
+    GraphQLTestClient client = new GraphQLTestClient();
+    TestResponse response = client.executeQueryOrPossibleSpecificError(
+        String.format("{ user(id: \"%s\") { name } }", malicious),
+        Optional.empty(),
+        Optional.of("Invalid input")
+    );
+    assertThat(response.hasError() || !response.containsData("DROP")).isTrue();
+}
+
+@Provide
+Arbitrary<String> payloads() {
+    return GraphQLFuzzingArbitraries.sqlInjectionPayloads();
+}
+----
+
+IMPORTANT: Fuzzing tests hit a live endpoint.
+Run them against a test or staging environment, not production.
+Reduce `tries` (as shown above) when the suite needs to stay fast and full coverage is provided by a dedicated security scan.
+
+== Database-sampled arbitraries
+
+`DatabaseArbitraryProvider` in `com.snowedunderproductions.graphprobe.jqwik.arbitraries` bridges the database layer — described in xref:database-providers.adoc[] — into jqwik.
+It executes the given SQL once over the shared HikariCP pool, collects the rows, and builds an arbitrary that samples from them.
+This lets property tests use real, representative values from the database rather than synthetic ones.
+
+The entry point is `fromQuery(sql)`, which returns a provider object.
+Chain one of the extraction methods to turn a column into an `Arbitrary`:
+
+[cols="1,2", options="header"]
+|===
+|Method |Returns
+
+|`extractString(column)`
+|`Arbitrary<String>` drawn from the column values
+
+|`extractInt(column)`
+|`Arbitrary<Integer>`
+
+|`extractLong(column)`
+|`Arbitrary<Long>`
+
+|`extractDouble(column)`
+|`Arbitrary<Double>`
+
+|`extractBoolean(column)`
+|`Arbitrary<Boolean>`
+
+|`extractStringArray(columns...)`
+|`Arbitrary<String[]>` — one array entry per named column per row
+
+|`extractObject(mapper)`
+|`Arbitrary<T>` via a custom `ResultSet → T` mapping function
+|===
+
+[source,java]
+----
+@Provide
+Arbitrary<String> realUserIds() {
+    return DatabaseArbitraryProvider
+        .fromQuery("SELECT user_id FROM users WHERE active = true LIMIT 100")
+        .extractString("user_id");
+}
+----
+
+TIP: Keep the SQL lightweight.
+`DatabaseArbitraryProvider` runs the query at `@Provide` resolution time, which is before jqwik starts generating samples.
+A query that fetches hundreds of thousands of rows will slow test start-up noticeably; `LIMIT 100` to `LIMIT 1000` is usually sufficient for good coverage.
+
+== Using arbitraries with @DynamicSource
+
+When your suite uses the `@ParameterizedTest @DynamicSource` pattern and you want generated data alongside database rows, extend `JqwikArgumentsProvider` in `com.snowedunderproductions.graphprobe.jqwik.providers`.
+
+The abstract class bridges jqwik arbitraries into the JUnit `ArgumentsProvider` interface.
+Override `getArbitraries()` to return the array of `Arbitrary<?>` instances — one per test method parameter — and optionally override `getSampleCount()` (default 20) and `getRandomSeed()`.
+The provider samples each arbitrary `getSampleCount()` times and yields a `Stream<Arguments>` of that many rows.
+
+[source,java]
+----
+public class UserDataProvider extends JqwikArgumentsProvider {
+
+    @Override
+    protected Arbitrary<?>[] getArbitraries() {
+        return new Arbitrary<?>[] {
+            GraphQLArbitraries.graphqlId(),
+            GraphQLArbitraries.graphqlString(3, 30),
+            GraphQLArbitraries.email()
+        };
+    }
+
+    @Override
+    protected int getSampleCount() {
+        return 20;
+    }
+}
+----
+
+Reference the provider from a parameterised test exactly as you would a database-backed provider:
+
+[source,java]
+----
+@ParameterizedTest
+@DynamicSource(argumentsProvider = UserDataProvider.class)
+void userCreationAcceptsGeneratedInputs(String userId, String name, String email) {
+    // called 20 times, once per sampled row
+}
+----
+
+NOTE: Shrinking is not available on the `@DynamicSource` path because JUnit, not jqwik, drives the execution.
+If a generated input causes a failure, add it as a fixed `Arguments.of(...)` row in your provider while you investigate, or switch to the native `@GraphQLProperty` path for full shrinking support.
+
+For a full comparison of the two execution paths see <<Two ways to generate inputs>>, and for the database provider pattern that `DatabaseArbitraryProvider` builds on, see xref:database-providers.adoc[].

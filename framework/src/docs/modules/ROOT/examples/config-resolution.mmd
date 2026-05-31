@@ -1,0 +1,37 @@
+flowchart TD
+    %% ── Entry point ──────────────────────────────────────────────────────────
+    A["Component requests config key\n(EnvConfig.get / getRequired / getInt / getBoolean)"]
+
+    %% ── Primary precedence decisions ─────────────────────────────────────────
+    A --> B{"System.getenv(key) set?"}
+    B -- "yes" --> C["Use system environment value"]
+    B -- "no"  --> D{".env file has key?\n(dotenv-java)"}
+    D -- "yes" --> E["Use .env value"]
+    D -- "no"  --> F{"Required?"}
+    F -- "yes (getRequired)" --> G["Throw IllegalStateException"]
+    F -- "no"               --> H["Use default value (or null)"]
+
+    %% ── Representative keys by subsystem ────────────────────────────────────
+    subgraph keys ["Representative keys by subsystem"]
+        direction TB
+        K1["Database: POSTGRES_URL / USER / PASSWORD (required),\nHIKARI_* tuning, POSTGRES_SSL_MODE"]
+        K2["GraphQL client: GRAPHQL_URL (required),\nAUTH_HEADER_NAME / VALUE,\nGRAPHQL_*_TIMEOUT_SECONDS, GRAPHQL_MAX_CONCURRENT"]
+        K3["Pagination: GRAPHQL_FIRST_PAGE,\nGRAPHQL_PAGE_SIZE, GRAPHQL_MAX_PAGE"]
+        K4["Behaviour: USE_CSV, ITEST_PROFILE / test.profile,\ncurrentVersion (system property)"]
+    end
+
+    %% ── Profile & gating ────────────────────────────────────────────────────
+    subgraph gating ["Profile & gating"]
+        direction TB
+        P1["TestProfile\n(ITEST_PROFILE / test.profile)"]
+        P2{"FAST?"}
+        P3["Clamp: maxPage to 3,\nSQL LIMIT to 50,\niterations to 5, warmup to 1"]
+        P4["Full coverage values\n(DEFAULT profile)"]
+        P5["currentVersion system property\n(default 0.0.0)"]
+        P6["EnabledForVersionCondition compares vs\n@EnabledForVersion minimumVersion (SemVer)\n-> enable / disable test"]
+
+        P1 --> P2
+        P2 -- "yes"        --> P3
+        P2 -- "no (DEFAULT)" --> P4
+        P5 --> P6
+    end

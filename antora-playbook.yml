@@ -1,0 +1,19 @@
+antora:
+  extensions: []
+site:
+  title: GraphProbe
+  start_page: graphprobe::index.adoc
+content:
+  sources:
+    - url: .
+      start_paths: framework/src/docs
+      branches: HEAD
+asciidoc:
+  attributes:
+    allow-uri-read: true
+output:
+  dir: build/docs/antora
+ui:
+  bundle:
+    url: https://gitlab.com/antora/antora-ui-default/-/jobs/artifacts/HEAD/raw/build/ui-bundle.zip?job=bundle-stable
+    snapshot: true

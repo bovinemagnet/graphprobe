@@ -1,0 +1,42 @@
+sequenceDiagram
+    participant Platform as "JUnit Platform launcher"
+    participant StatsListener as "HikariStatsListener (TestExecutionListener)"
+    participant Monitor as "ConnectionPoolMonitor"
+    participant Lifecycle as "DatabaseTestLifecycle (BeforeAll/AfterAll)"
+    participant DCM as "DatabaseConnectionManager"
+    participant VerCond as "EnabledForVersionCondition"
+    participant Test as "Test methods"
+    participant MetricsExt as "GraphQLMetricsExtension (AfterAll)"
+    participant JVM as "JVM shutdown hook"
+
+    Platform ->> StatsListener: testPlanExecutionStarted()
+    StatsListener ->> Monitor: start(interval=HIKARI_STATS_INTERVAL_SECONDS, default 30s)
+    Note over Monitor: Daemon thread periodic health checks and leak alerts
+
+    loop For each test class
+        Platform ->> Lifecycle: beforeAll()
+        Lifecycle ->> DCM: initialize() idempotent once per JVM
+        Note over DCM: HikariConfig.createDataSource() and validate then register JVM shutdown hook
+
+        loop For each test method
+            Platform ->> VerCond: evaluateExecutionCondition()
+            Note over VerCond: Compare currentVersion vs EnabledForVersion minimumVersion (SemVer)
+
+            alt Version satisfied (enabled)
+                Platform ->> Test: run test using clients and providers
+            else Disabled
+                Note over Platform: Test skipped
+            end
+        end
+
+        Platform ->> MetricsExt: afterAll()
+        MetricsExt ->> MetricsExt: formatClassSummary() then attach to Allure
+
+        Platform ->> Lifecycle: afterAll()
+        Note over Lifecycle: Log stats and check for connection leaks (pool NOT closed - shared)
+    end
+
+    Platform ->> StatsListener: testPlanExecutionFinished()
+    StatsListener ->> Monitor: stop() (final summary)
+
+    Note over JVM,DCM: On JVM exit shutdown hook gracefully closes the pool (10s timeout)

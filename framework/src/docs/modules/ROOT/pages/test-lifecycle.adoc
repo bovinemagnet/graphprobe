@@ -1,0 +1,152 @@
+= Test lifecycle
+:description: How the framework hooks into JUnit 5 at each phase of a test run — pool initialisation, per-class lifecycle management, periodic pool monitoring, request metrics, and version-conditional execution.
+
+The framework plugs into JUnit 5 at several extension points to manage shared infrastructure across an entire test run.
+This page explains each hook, the class that owns it, and the order in which the hooks fire relative to one another.
+
+== Execution order
+
+The diagram below shows the full sequence from launcher start-up to JVM shutdown.
+
+.JUnit lifecycle and the framework's hooks
+image::test-execution-lifecycle.svg[Test execution lifecycle]
+
+The sequence proceeds as follows:
+
+. The JUnit Platform launcher fires `testPlanExecutionStarted`.
+  `HikariStatsListener` receives this event and starts the `ConnectionPoolMonitor` background daemon.
+. For each test class, JUnit calls the `BeforeAllCallback` chain.
+  `DatabaseTestLifecycle.beforeAll` idempotently initialises the singleton connection pool and validates connectivity.
+. Before each test method, `EnabledForVersionCondition` evaluates the `@EnabledForVersion` annotation (when present) and decides whether to run or skip the test.
+. The test method executes.
+. After each test class, JUnit calls the `AfterAllCallback` chain.
+  `GraphQLMetricsExtension.afterAll` attaches a request-metrics summary to the Allure report.
+  `DatabaseTestLifecycle.afterAll` logs pool statistics and checks for connection leaks; the pool itself is left open.
+. When all test classes have finished, the launcher fires `testPlanExecutionFinished`.
+  `HikariStatsListener` stops the monitor and logs a final summary.
+. At JVM shutdown, the registered shutdown hook closes the shared connection pool.
+
+== Database lifecycle
+
+`com.snowedunderproductions.graphprobe.database.DatabaseTestLifecycle` is a JUnit 5 extension that implements both `BeforeAllCallback` and `AfterAllCallback`.
+
+=== beforeAll
+
+When a test class starts, `beforeAll`:
+
+. Calls `DatabaseConnectionManager.initialize()` to idempotently bring up the singleton HikariCP connection pool.
+  If another test class has already initialised the pool, the call is a no-op.
+. Validates connectivity by executing a `SELECT current_timestamp` query against the pool.
+. Registers a JVM shutdown hook (exactly once across the entire run) that will close the pool when the JVM exits.
+
+=== afterAll
+
+When a test class finishes, `afterAll` logs pool statistics and checks for connection leaks.
+It does *not* close the pool.
+
+NOTE: The connection pool is shared across all test classes in a run.
+Closing it after a single class would break subsequent classes.
+The pool is only closed by the JVM shutdown hook, ensuring that every class can acquire connections throughout the full test run.
+
+=== Additional API
+
+`DatabaseTestLifecycle` also exposes:
+
+`getStatus()`::
+Returns a `LifecycleStatus` record describing the current state of the pool and lifecycle.
+
+`forceShutdown()`::
+Immediately closes the pool and clears lifecycle state.
+Intended for exceptional teardown scenarios, not normal test runs.
+
+=== Registration
+
+Register the extension on each test class that needs a database connection:
+
+[source,java]
+----
+@ExtendWith(DatabaseTestLifecycle.class)
+class CountryQueryIT { }
+----
+
+Alternatively, add it to `junit-platform.properties` to activate it automatically for every test class in the project:
+
+[source,properties]
+----
+junit.jupiter.extensions.autodetection.enabled=true
+----
+
+== Pool monitoring
+
+=== HikariStatsListener
+
+`com.snowedunderproductions.graphprobe.database.HikariStatsListener` is a JUnit Platform `TestExecutionListener`.
+It observes the entire test plan rather than individual test classes, giving it visibility across the whole run:
+
+`testPlanExecutionStarted`::
+Reads the `HIKARI_STATS_INTERVAL_SECONDS` environment variable (default `30`) and starts a `ConnectionPoolMonitor` at that interval.
+
+`testPlanExecutionFinished`::
+Stops the monitor and logs a final pool summary.
+
+`HikariStatsListener` is registered via the Java service-loader mechanism, making it opt-in per consuming project.
+Create the service file in your test resources:
+
+[source,text]
+----
+META-INF/services/org.junit.platform.launcher.TestExecutionListener
+----
+
+Add one line to the file containing the fully qualified class name:
+
+[source,text]
+----
+com.snowedunderproductions.graphprobe.database.HikariStatsListener
+----
+
+=== ConnectionPoolMonitor
+
+`com.snowedunderproductions.graphprobe.database.ConnectionPoolMonitor` is a background daemon thread (a `ScheduledExecutorService`) started by `HikariStatsListener`.
+On each tick it performs a health check and emits warnings when:
+
+* Pool utilisation exceeds 80 %.
+* Pending connection requests exceed 3.
+* Connection failure rate exceeds 5 %.
+* A connection leak threshold is reached.
+
+Full details of the thresholds and the metrics they are derived from are described in xref:database-providers.adoc[Database test providers].
+
+== Request metrics
+
+`com.snowedunderproductions.graphprobe.client.GraphQLMetricsExtension` is a JUnit 5 `AfterAllCallback`.
+After each test class finishes, its `afterAll` method calls `GraphQLRequestMetrics.formatClassSummary(className)`.
+If a summary is available, the extension attaches it to the Allure report inside a synthetic tear-down container so that per-class request statistics appear alongside the test results.
+
+If Allure is not on the classpath the extension degrades silently — no exception is thrown and no metrics are lost.
+
+Register the extension alongside `DatabaseTestLifecycle`:
+
+[source,java]
+----
+@ExtendWith({DatabaseTestLifecycle.class, GraphQLMetricsExtension.class})
+class CountryQueryIT { }
+----
+
+The metrics that the extension reports — latency, throughput, error counts — are described in xref:client-tools.adoc[Client test tools].
+
+== Version conditions
+
+`com.snowedunderproductions.graphprobe.annotations.EnabledForVersionCondition` is a JUnit 5 `ExecutionCondition` that backs the `@EnabledForVersion` annotation.
+It compares the `currentVersion` system property against the minimum version declared on the annotation, using semantic versioning rules.
+A test is enabled when the running version meets or exceeds the minimum; otherwise it is skipped with an informative reason message.
+
+Full configuration details, including how to set `currentVersion` in Gradle and in CI, are described in xref:environment-variables.adoc[Environment variables].
+
+[source,java]
+----
+@Test
+@EnabledForVersion(minimumVersion = "2.3.0")
+void featureIntroducedIn230() {
+    // Skipped unless -DcurrentVersion=2.3.0 or higher is set
+}
+----

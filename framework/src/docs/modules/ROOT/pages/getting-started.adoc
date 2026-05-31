@@ -1,0 +1,150 @@
+= Getting started
+:description: How to add GraphProbe to your project, configure it, and write your first tests.
+
+GraphProbe is a shared test library that provides a GraphQL HTTP client, database-driven test data providers, and property-based testing support via jqwik — all configured through environment variables so no project-specific values are ever baked into the framework itself.
+
+== Prerequisites
+
+* Java 21 or later on the build path.
+* A reachable GraphQL endpoint that the tests can send HTTP requests to.
+* PostgreSQL is only required when you use the database-driven test providers (`BaseArgumentsProvider` subclasses).
+All other functionality is available without a database connection.
+
+== Add the dependency
+
+Add the framework to your project's test dependencies:
+
+[source,gradle]
+----
+dependencies {
+    testImplementation 'com.snowedunderproductions:graphprobe:1.0.0-SNAPSHOT'
+}
+----
+
+The library uses Gradle's `api` configuration for its core dependencies, so JUnit, AssertJ, jqwik, the database bundle, and the GraphQL client bundle are all available transitively in your test compile classpath without needing to declare them yourself.
+
+.Building from source
+If you need a local snapshot (for example, to test a framework change before it is published), build and publish to Maven Local:
+
+[source,bash]
+----
+gradle publishToMavenLocal
+----
+
+Then ensure `mavenLocal()` appears in your consuming project's `repositories` block:
+
+[source,gradle]
+----
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+----
+
+== Configure the environment
+
+Configuration is read from environment variables.
+If a `.env` file is present at the root of the consuming project, its values are loaded via dotenv-java.
+When the same variable appears in both places, the system environment variable takes precedence over the `.env` file value.
+
+A minimal `.env` for a suite that uses both the GraphQL client and the database providers:
+
+[source,properties]
+----
+GRAPHQL_URL=https://api.example.com/graphql
+AUTH_HEADER_VALUE=Bearer <token>
+
+# Only needed for database-driven providers
+POSTGRES_URL=jdbc:postgresql://localhost:5432/testdb
+POSTGRES_USER=test
+POSTGRES_PASSWORD=secret
+----
+
+`GRAPHQL_URL` is the only variable that is strictly required to run the client.
+`AUTH_HEADER_NAME` defaults to `Authorization` and can be omitted when that default is correct for your API.
+`AUTH_HEADER_VALUE` is optional and is not sent at all when left unset.
+
+TIP: For the full variable reference, including optional tuning parameters for the connection pool, timeouts, and pagination, see xref:environment-variables.adoc[Environment variables].
+
+== Your first GraphQL test
+
+Construct a `GraphQLTestClient`, execute a query, and assert on the extracted value:
+
+[source,java]
+----
+import com.snowedunderproductions.graphprobe.client.GraphQLTestClient;
+import org.junit.jupiter.api.Test;
+import static org.assertj.core.api.Assertions.assertThat;
+
+class CountryQueryIT {
+
+    @Test
+    void returnsCountryName() {
+        GraphQLTestClient client = new GraphQLTestClient();
+        String name = client.executeQuery(
+            "{ country(code: \"GB\") { name } }",
+            "$.data.country.name");
+        assertThat(name).isEqualTo("United Kingdom");
+    }
+}
+----
+
+`executeQuery` extracts the value at the given JsonPath expression from the response body and returns it as a `String`.
+If the response contains any GraphQL errors, the method throws immediately — the test fails at the point of execution rather than at a potentially misleading assertion further down.
+
+For the resilient `SimpleGraphQLClient` (with retry, concurrency throttling, and Allure attachments) and the reactive client, see xref:client-tools.adoc[Client test tools].
+
+== Your first database-driven test
+
+When test data lives in a database, extend `BaseArgumentsProvider` to supply rows as JUnit arguments:
+
+[source,java]
+----
+import com.snowedunderproductions.graphprobe.database.BaseArgumentsProvider;
+import org.junit.jupiter.params.provider.Arguments;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+
+public class CountryCodeProvider extends BaseArgumentsProvider {
+    @Override
+    protected String getSQL() {
+        return "SELECT code, name FROM countries LIMIT 100";
+    }
+
+    @Override
+    protected Arguments extractArguments(ResultSet rs) throws SQLException {
+        return Arguments.of(getSafeString(rs, "code"), getSafeString(rs, "name"));
+    }
+
+    @Override
+    protected String getCacheKey() {
+        return "country-codes";
+    }
+}
+----
+
+Reference the provider from a `@ParameterizedTest` using the `@DynamicSource` annotation:
+
+[source,java]
+----
+@ParameterizedTest
+@DynamicSource(argumentsProvider = CountryCodeProvider.class)
+void everyCountryResolves(String code, String name) {
+    // one invocation per database row
+}
+----
+
+The rows are fetched once per test run, cached using Caffeine (five-minute TTL, up to 10 000 entries), and made available through a singleton HikariCP connection pool shared across all providers in the suite.
+This means the database is queried at most once per `getCacheKey()` value, regardless of how many test methods reference the same provider.
+
+For the full API, CSV fallback, and pool configuration, see xref:database-providers.adoc[Database test providers].
+
+== Build the documentation
+
+This documentation site is built with Antora.
+To regenerate the site locally, run:
+
+[source,bash]
+----
+gradle21w antora
+----

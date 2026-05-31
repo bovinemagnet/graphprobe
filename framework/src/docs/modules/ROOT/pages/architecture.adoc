@@ -1,0 +1,122 @@
+= Architecture
+:description: A walkthrough of the layered architecture of GraphProbe, covering design principles, package structure, and the responsibility of each layer.
+
+GraphProbe is organised as a set of collaborating layers, each with a clearly scoped responsibility.
+Test code at the top delegates to JUnit 5 extensions and annotations, which in turn drive the client, database, and property-testing layers; all of those ultimately depend on a shared configuration layer and reach out to external systems at the bottom.
+The `DatabaseConnectionManager` singleton is the architectural lynchpin: it owns the single HikariCP pool shared across every test class and every arguments provider in a test run.
+
+== Design principles
+
+* The framework is a reusable *library*, not an application; all code is domain-agnostic and carries no business logic.
+* Configuration is environment-driven — no hardcoded URLs and no constants class.
+  Every tunable value is read from a `.env` file or a system environment variable at runtime.
+* The HikariCP connection pool is a thread-safe singleton so that tests running in parallel share one pool rather than each creating their own.
+* Database connections are always acquired inside `try-with-resources` blocks to guarantee prompt release regardless of test outcome.
+* The Gradle build exposes core test dependencies via the `api` configuration, so consuming projects receive them transitively without adding explicit dependency declarations.
+
+== Layered view
+
+.Layered component architecture
+image::architecture-overview.svg[Layered architecture]
+
+Dependencies flow strictly downward.
+Test code knows only the annotation and client API; it has no direct dependency on HikariCP, Caffeine, or JDBC.
+The jqwik and database layers are siblings at the same tier — both depend on the configuration layer but are otherwise independent of each other.
+External systems (PostgreSQL and the GraphQL endpoint) sit entirely outside the framework boundary and are reached only through the database and client layers respectively.
+
+== Layers
+
+=== Configuration
+
+The configuration layer provides environment variable loading and execution-profile selection to every other layer in the framework.
+
+`EnvConfig` resolves values first from a `.env` file (via dotenv-java) and then from system environment variables, so CI overrides work without code changes.
+`TestProfile` models the two named execution profiles (`DEFAULT` and `FAST`) that the JUnit extension uses to gate which tests run in a given environment.
+
+See xref:environment-variables.adoc[] for the full variable reference and profile documentation.
+
+=== Arguments providers and database layer
+
+The database layer manages the shared connection pool and provides the machinery for turning SQL result sets into JUnit 5 parameterised-test arguments.
+
+`DatabaseConnectionManager` is a thread-safe singleton that creates and owns the `HikariDataSource` configured by `HikariConfig`.
+`BaseArgumentsProvider` is the template-method base class for all database-driven argument providers; it uses a Caffeine cache (five-minute TTL, 10 000-entry maximum) to avoid repeated database round-trips for the same query within a test run.
+`ConnectionPoolMonitor` and `HikariStatsListener` surface pool health and per-test-class statistics without any instrumentation in consuming projects.
+`DatabaseTestLifecycle` is a JUnit 5 extension that hooks into the test lifecycle to initialise and gracefully shut down the pool.
+
+See xref:database-providers.adoc[] for how to extend `BaseArgumentsProvider` and how the pool and cache interact.
+
+=== GraphQL client and helpers
+
+The client layer provides three distinct clients for querying GraphQL endpoints, together with several test-helper utilities.
+
+`GraphQLTestClient` is a lightweight OkHttp-based client suited to straightforward queries.
+`SimpleGraphQLClient` adds concurrency throttling (`GraphQLRequestThrottle`), per-request metrics (`GraphQLRequestMetrics`, `GraphQLMetricsExtension`), retry-with-backoff, and Allure report attachments.
+`GraphQLTestExecutor` wraps a Netflix DGS reactive executor for pipelines that require Spring WebFlux.
+`TestResponse` is a thin wrapper around the raw HTTP response that exposes typed data extraction and error inspection.
+`PaginationTestHelper` and `DeepLinkTestHelper` provide reusable assertion utilities for cursor-based pagination and deep-link navigation patterns.
+
+See xref:client-tools.adoc[] for client configuration, throttle settings, and the helper APIs.
+
+=== jqwik arbitraries
+
+The jqwik layer provides reusable input generators (arbitraries) for property-based and fuzz testing, independent of any specific GraphQL schema.
+
+`GraphQLArbitraries` is a factory of arbitraries for standard GraphQL scalar types: IDs, strings, integers, floats, booleans, temporal values, pagination cursors, email addresses, URLs, and IP addresses.
+`GraphQLFuzzingArbitraries` supplies payloads for security-oriented fuzz tests: SQL injection, NoSQL injection, XSS, path traversal, command injection, Unicode edge cases, and deeply nested or malformed GraphQL documents.
+`DatabaseArbitraryProvider` bridges the database layer into jqwik by sampling real rows from a SQL query and exposing them as typed arbitraries.
+`JqwikArgumentsProvider` makes jqwik arbitraries available to the `@DynamicSource` annotation, and `@GraphQLProperty` and `@GraphQLArbitrary` provide ergonomic markers for property-based test methods.
+
+See xref:property-testing.adoc[] for worked examples and guidance on composing complex arbitraries.
+
+=== JUnit extensions and listeners
+
+The extension layer integrates the framework with the JUnit 5 lifecycle without requiring consuming projects to add any configuration beyond the dependency.
+
+`DatabaseTestLifecycle` coordinates pool initialisation before the first test and clean shutdown after the last.
+`GraphQLMetricsExtension` collects per-test-class request metrics and attaches a summary to Allure reports.
+`EnabledForVersionCondition` implements the `@EnabledForVersion` annotation, evaluating semantic version constraints against the `currentVersion` system property to skip tests that do not apply to the version under test.
+
+See xref:test-lifecycle.adoc[] for the extension registration mechanism and lifecycle event sequence.
+
+== Package structure
+
+[source,text]
+----
+com.snowedunderproductions.graphprobe
+├── config/
+│   ├── EnvConfig                     # Environment variable loader (.env + system)
+│   └── TestProfile                   # Execution profile enum (DEFAULT, FAST)
+├── database/
+│   ├── DatabaseConnectionManager     # Thread-safe singleton HikariCP pool
+│   ├── HikariConfig                  # Pool factory / configuration builder
+│   ├── BaseArgumentsProvider         # Template for DB-driven argument providers
+│   ├── DatabaseTestLifecycle         # JUnit 5 extension — pool init and shutdown
+│   ├── ConnectionPoolMonitor         # Pool health monitoring
+│   └── HikariStatsListener           # Per-test-class pool statistics
+├── annotations/
+│   ├── DynamicSource                 # Annotation — database or CSV test data source
+│   ├── DynamicSourceProvider         # Provider implementation for @DynamicSource
+│   ├── EnabledForVersion             # Annotation — version-conditional test execution
+│   └── EnabledForVersionCondition    # Condition implementation for @EnabledForVersion
+├── client/
+│   ├── GraphQLTestClient             # Basic OkHttp client
+│   ├── SimpleGraphQLClient           # Resilient OkHttp client (throttle, retry, metrics, Allure)
+│   ├── GraphQLTestExecutor           # Netflix DGS reactive executor
+│   ├── TestResponse                  # Response wrapper (data extraction, error access)
+│   ├── GraphQLRequestThrottle        # Concurrency limiter for outbound requests
+│   ├── GraphQLRequestMetrics         # Per-request timing and status tracking
+│   ├── GraphQLMetricsExtension       # JUnit 5 extension — metrics lifecycle
+│   ├── PaginationTestHelper          # Utilities for cursor-based pagination assertions
+│   └── DeepLinkTestHelper            # Utilities for deep-link navigation assertions
+└── jqwik/
+    ├── arbitraries/
+    │   ├── GraphQLArbitraries        # Arbitraries for GraphQL scalar types
+    │   ├── GraphQLFuzzingArbitraries # Injection, edge-case, and fuzz payloads
+    │   └── DatabaseArbitraryProvider # SQL query → jqwik Arbitrary bridge
+    ├── providers/
+    │   └── JqwikArgumentsProvider    # Arbitrary → @DynamicSource bridge
+    └── annotations/
+        ├── GraphQLProperty           # Marker for property-based test methods
+        └── GraphQLArbitrary          # Documents arbitrary-provider relationships
+----

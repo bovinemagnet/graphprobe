@@ -1,0 +1,5 @@
+:experimental:
+:icons: font
+:source-highlighter: rouge
+:toc: left
+:toclevels: 3

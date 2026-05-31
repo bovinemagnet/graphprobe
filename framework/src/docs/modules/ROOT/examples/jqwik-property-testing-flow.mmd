@@ -1,0 +1,46 @@
+flowchart TD
+    %% ── Arbitrary Sources ──────────────────────────────────────────────
+    subgraph SOURCES["Arbitrary sources"]
+        direction TB
+        S1["GraphQLArbitraries — scalars &amp; patterns\n(graphqlId, graphqlString, graphqlInt,\nemail, isoTimestamp, relayCursor)"]:::source
+        S2["GraphQLFuzzingArbitraries — security/edge cases\n(SQLi, XSS, path traversal,\nlong strings, deeply nested queries)"]:::source
+        S3["DatabaseArbitraryProvider.fromQuery(sql)\n.extractString(col)\n— samples real DB rows"]:::source
+    end
+
+    %% ── Database back-end ───────────────────────────────────────────────
+    DCM["DatabaseConnectionManager (singleton)"]
+    PG["PostgreSQL"]
+    S3 --> DCM --> PG
+
+    %% ── Path A ──────────────────────────────────────────────────────────
+    subgraph PATHA["Path A: native jqwik property"]
+        direction TB
+        A1["@Provide method returns Arbitrary&lt;T&gt;"]
+        A2["@GraphQLProperty test method with @ForAll params"]
+        A3["jqwik runtime\ngenerates 'tries' samples (default 100);\nshrinks to minimal counterexample on failure"]
+        A4["Assertions against GraphQL endpoint / SUT"]
+        A1 --> A2 --> A3 --> A4
+    end
+
+    %% ── Path B ──────────────────────────────────────────────────────────
+    subgraph PATHB["Path B: @DynamicSource bridge"]
+        direction TB
+        B1["JqwikArgumentsProvider subclass\n(getArbitraries(), getSampleCount())"]
+        B2["Samples N values per arbitrary (default 20)"]
+        B3["Stream&lt;Arguments&gt;"]
+        B4["@ParameterizedTest + @DynamicSource\n(argumentsProvider = ...)"]
+        B1 --> B2 --> B3 --> B4
+    end
+
+    %% ── Edges: sources into both paths ─────────────────────────────────
+    S1 --> A1
+    S2 --> A1
+    S3 --> A1
+
+    S1 --> B1
+    S2 --> B1
+    S3 --> B1
+
+    %% ── Styling ─────────────────────────────────────────────────────────
+    classDef source fill:#d4edda,stroke:#28a745,stroke-width:2px,color:#155724
+    classDef default fill:#f8f9fa,stroke:#6c757d,color:#212529

@@ -1,0 +1,46 @@
+/*
+ * GraphProbe - Sample Consumer Module
+ *
+ * A minimal, self-contained example of how a downstream test project uses the
+ * GraphProbe framework. Every test here runs fully offline (no database, no live
+ * GraphQL endpoint) so the module builds and passes in CI without external infra.
+ *
+ * Consumption modes ("both"):
+ *   ./gradlew :sample:test                     -> depends on the in-build :framework
+ *                                                 project; always in sync with source.
+ *   ./gradlew :sample:test -PuseMavenLocal      -> depends on the PUBLISHED artifact
+ *                                                 com.snowedunderproductions:graphprobe
+ *                                                 from mavenLocal; validates the
+ *                                                 published POM and transitive deps.
+ *                                                 Run :framework:publishToMavenLocal first.
+ */
+
+plugins {
+    id 'java'
+}
+
+description = 'Example consumer demonstrating how to use the GraphProbe framework'
+
+dependencies {
+    if (project.hasProperty('useMavenLocal')) {
+        // Validate the published artifact exactly as an external consumer would.
+        testImplementation "com.snowedunderproductions:graphprobe:${version}"
+    } else {
+        // Fast feedback: compile/run against the framework source in this build.
+        testImplementation project(':framework')
+    }
+
+    // JUnit, AssertJ and jqwik (incl. the engine) arrive transitively from the
+    // framework's `api` dependencies, so consumers do not re-declare them.
+
+    // SLF4J binding so the framework's logging is rendered during the sample tests.
+    testRuntimeOnly libs.logback.classic
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
+}

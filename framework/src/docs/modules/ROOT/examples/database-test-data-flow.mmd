@@ -1,0 +1,52 @@
+sequenceDiagram
+    %% Database-driven test data flow via @DynamicSource
+    %% Connection pool is lazily initialised on first use —
+    %% the static init block in BaseArgumentsProvider calls
+    %% DatabaseConnectionManager the first time provideArguments runs.
+
+    participant JUnit as "JUnit 5 engine"
+    participant DSP as "DynamicSourceProvider"
+    participant BAP as "BaseArgumentsProvider subclass"
+    participant Cache as "Caffeine cache"
+    participant DCM as "DatabaseConnectionManager (singleton)"
+    participant Pool as "HikariCP pool"
+    participant DB as "PostgreSQL"
+
+    JUnit ->> DSP: provideArguments(context)
+    Note over JUnit,DSP: Triggered by @ParameterizedTest + @DynamicSource
+
+    Note over DSP: Reads USE_CSV via EnvConfig
+
+    alt USE_CSV = true and csvResource set
+        DSP ->> DSP: Read classpath CSV, skip header lines, split by delimiter
+        DSP -->> JUnit: "Stream<Arguments> (one per CSV line)"
+    else Database provider (default)
+        DSP ->> BAP: provideArguments(context)
+
+        BAP ->> BAP: getCacheKey()
+        BAP ->> Cache: get(cacheKey)
+
+        alt Cache hit
+            Cache -->> BAP: Cached List<Arguments>
+        else Cache miss
+            Note over BAP: getSQL() — template method on subclass
+            BAP ->> DCM: "executeWithConnection(operation)"
+            DCM ->> Pool: getConnection()
+            Pool -->> DCM: Pooled Connection
+            DCM ->> DB: Execute SQL query
+            DB -->> DCM: ResultSet
+
+            loop For each row in ResultSet
+                DCM ->> BAP: "extractArguments(row)  [null rows skipped]"
+            end
+
+            DCM -->> BAP: "List<Arguments>"
+            Note over DCM,Pool: Connection returned to pool
+            BAP ->> Cache: "put(cacheKey, results)"
+        end
+
+        BAP -->> DSP: "Stream<Arguments>"
+        DSP -->> JUnit: "Stream<Arguments>"
+    end
+
+    Note over JUnit: Test method invoked once per Arguments element

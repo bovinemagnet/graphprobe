@@ -1,0 +1,259 @@
+= Database test providers
+:description: How the framework turns database rows into parameterised test cases, with Caffeine caching, a shared HikariCP connection pool, and a CSV fallback for offline runs.
+
+The framework turns rows of database data into parameterised test cases, with connection pooling and result caching handled for you.
+You write a SQL query and a row-mapping method; the framework handles acquiring a pooled connection, iterating the `ResultSet`, caching the results for the duration of the test run, and feeding each row as a set of JUnit arguments to your `@ParameterizedTest`.
+
+== The @DynamicSource annotation
+
+`com.snowedunderproductions.graphprobe.annotations.DynamicSource` is a composed annotation that applies `@ArgumentsSource(DynamicSourceProvider.class)` to any `@ParameterizedTest` method.
+It selects its data source at runtime based on the `USE_CSV` environment variable.
+
+=== Attributes
+
+|===
+|Attribute |Type |Default |Purpose
+
+|`argumentsProvider`
+|`Class<? extends ArgumentsProvider>`
+|_(required when not using CSV)_
+|The `BaseArgumentsProvider` subclass that supplies rows from the database.
+
+|`csvResource`
+|`String`
+|`""`
+|Classpath path to a CSV file used when `USE_CSV=true`.
+
+|`delimiter`
+|`char`
+|`,`
+|Column delimiter applied when parsing the CSV file.
+
+|`linesToSkip`
+|`int`
+|`1`
+|Number of header lines to skip at the top of the CSV file.
+|===
+
+=== Usage
+
+[source,java]
+----
+@ParameterizedTest
+@DynamicSource(argumentsProvider = CountryCodeProvider.class)
+void everyCountryResolves(String code, String name) { }
+----
+
+At runtime, `DynamicSourceProvider` reads `USE_CSV`:
+
+* When `USE_CSV=true` and `csvResource` is set, it loads the classpath resource, skips `linesToSkip` header lines, splits each remaining line on `delimiter`, and yields one `Arguments` per line.
+* Otherwise, it instantiates `argumentsProvider` using its no-arg constructor, passes the `@DynamicSource` annotation to the provider if it also implements `AnnotationConsumer`, and delegates to its `provideArguments` method.
+
+== Writing a database provider
+
+Extend `com.snowedunderproductions.graphprobe.database.BaseArgumentsProvider` and implement three template methods.
+
+[source,java]
+----
+import com.snowedunderproductions.graphprobe.database.BaseArgumentsProvider;
+import org.junit.jupiter.params.provider.Arguments;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+
+public class CountryCodeProvider extends BaseArgumentsProvider {
+
+    @Override
+    protected String getSQL() {
+        return "SELECT code, name FROM countries ORDER BY code LIMIT 200";
+    }
+
+    @Override
+    protected Arguments extractArguments(ResultSet rs) throws SQLException {
+        String code = getSafeString(rs, "code");
+        String name = getSafeString(rs, "name");
+
+        if (code.isEmpty()) {           // <1>
+            return null;
+        }
+        return Arguments.of(code, name);
+    }
+
+    @Override
+    protected String getCacheKey() {
+        return "country-codes";        // <2>
+    }
+}
+----
+<1> Returning `null` from `extractArguments` skips the row; here we skip rows with no code.
+<2> The cache key must be unique across all providers in the test suite.
+
+=== Template methods
+
+`getSQL()`::
+Returns the SQL query whose rows become test arguments.
+The query runs exactly once per test-suite execution (subsequent calls hit the Caffeine cache).
+Keep it targeted — fetch only the columns and rows you actually need.
+
+`extractArguments(ResultSet rs)`::
+Maps a single `ResultSet` row to a JUnit `Arguments` object.
+Returning `null` silently skips the row; this is useful for filtering out rows that are incomplete or not relevant to the test.
+
+`getCacheKey()`::
+Provides the key under which this provider's results are stored in the shared cache.
+Two providers that return the same key will share the cached result — useful when multiple test classes need the same data set, but be aware they will also share the same cached column mapping.
+
+=== Null-safe column helpers
+
+`BaseArgumentsProvider` provides three convenience methods that return a non-null default instead of throwing when a column value is SQL `NULL`:
+
+* `getSafeString(rs, column)` — returns the column value as a `String`, or `""` (empty string) when the value is SQL `NULL`.
+* `getSafeLongAsString(rs, column)` — returns the `BIGINT` column value as a decimal `String`, or `"0"` when the value is SQL `NULL`.
+* `getSafeIntAsString(rs, column)` — returns the `INTEGER` column value as a decimal `String`, or `"0"` when the value is SQL `NULL`.
+
+== How data flows
+
+.Database-driven test data flow
+image::database-test-data-flow.svg[Database test data flow]
+
+When JUnit resolves the arguments for a `@DynamicSource`-annotated test method, the following sequence occurs:
+
+1. JUnit calls `DynamicSourceProvider.provideArguments`.
+2. `DynamicSourceProvider` reads `USE_CSV`. Because it is not set (or not `true`), it delegates to the configured `BaseArgumentsProvider` subclass.
+3. `BaseArgumentsProvider` looks up `getCacheKey()` in the shared Caffeine cache.
+   * *Cache hit* — the cached `List<Arguments>` is returned immediately; no database call is made.
+   * *Cache miss* — the provider proceeds to step 4.
+4. `BaseArgumentsProvider` acquires a connection from the shared `DatabaseConnectionManager` pool.
+5. It executes the SQL returned by `getSQL()` and iterates the `ResultSet`, calling `extractArguments` for each row and collecting non-null results into a `List<Arguments>`.
+6. The list is stored in the cache under `getCacheKey()` with a five-minute expiry (maximum 10 000 entries, with statistics collection enabled).
+7. The `List<Arguments>` is returned to JUnit, which invokes the test method once per entry.
+
+The connection pool is shared across all `BaseArgumentsProvider` subclasses in the test suite.
+A static initialiser in `BaseArgumentsProvider` ensures the pool is ready before the first SQL query is attempted.
+
+NOTE: The five-minute TTL means that, for suites running longer than five minutes, cached results may be evicted and re-fetched mid-run.
+In practice this is harmless, but it is worth knowing when debugging unexpected extra queries in long-running suites.
+
+== CSV fallback
+
+When a database is not available — for example, in an offline developer environment or a CI stage that runs without a test database — set `USE_CSV=true` and provide a matching CSV file on the test classpath.
+
+[source,java]
+----
+@ParameterizedTest
+@DynamicSource(csvResource = "/test-data/countries.csv", delimiter = ',', linesToSkip = 1)
+void everyCountryResolves(String code, String name) { }
+----
+
+[source,bash]
+----
+USE_CSV=true gradle test
+----
+
+The CSV file must be placed under `src/test/resources` so that it is on the test classpath:
+
+.`src/test/resources/test-data/countries.csv`
+[source,text]
+----
+code,name
+GB,United Kingdom
+US,United States
+DE,Germany
+----
+
+`DynamicSourceProvider` loads the resource, skips `linesToSkip` lines (defaulting to 1 to discard the header row), and splits each remaining line on `delimiter` (defaulting to `,`).
+Each resulting array of strings becomes one `Arguments` instance.
+
+TIP: Keep your CSV files in sync with the database query in `getSQL()`.
+The column order in the CSV must match the order of the fields passed to `Arguments.of(...)` in `extractArguments`.
+
+== Connection pool
+
+=== Singleton manager
+
+`com.snowedunderproductions.graphprobe.database.DatabaseConnectionManager` is a thread-safe singleton that wraps a single HikariCP connection pool for the lifetime of the JVM.
+
+`getInstance()` uses double-checked locking to ensure only one pool is ever created, even under parallel test execution.
+`initialize()` is idempotent — calling it more than once is safe and has no effect after the first initialisation.
+
+Key methods:
+
+|===
+|Method |Purpose
+
+|`getInstance()`
+|Returns the singleton; creates it on first call.
+
+|`initialize()`
+|Idempotent pool initialisation (called automatically by `BaseArgumentsProvider`).
+
+|`getConnection()`
+|Acquires a pooled connection under a read lock.
+
+|`executeWithConnection(operation)`
+|Acquires a connection, passes it to the operation, and releases it in a `finally` block.
+
+|`getHealthStatus()`
+|Returns a human-readable health summary.
+
+|`getStatistics()`
+|Returns pool statistics (active, idle, pending, total).
+
+|`isInitialized()`
+|Returns `true` when the pool has been created.
+
+|`isShuttingDown()`
+|Returns `true` once shutdown has been requested.
+
+|`shutdown(timeoutSeconds)`
+|Graceful shutdown: drains active connections, then closes the pool.
+
+|`forceShutdown()`
+|Immediate shutdown; closes the pool without waiting for active connections.
+|===
+
+=== HikariConfig factory
+
+`com.snowedunderproductions.graphprobe.database.HikariConfig` builds a PostgreSQL-tuned `HikariDataSource` from environment variables.
+Key behaviours:
+
+* `createDataSource()` reads the `HIKARI_*` and `POSTGRES_*` variables and applies PostgreSQL-specific optimisations including prepared-statement caching and JMX metric registration.
+* `validateConfiguration()` runs a `SELECT 1` test query to confirm the pool can reach the database before the first test executes.
+* `gracefulShutdown()` suspends pool acquisition, drains active connections, and closes the data source cleanly.
+* `getPoolStatistics()` returns a statistics snapshot.
+
+For the full list of supported variables, see xref:environment-variables.adoc[Environment variables].
+
+=== Pool lifecycle
+
+.Connection pool lifecycle
+image::connection-pool-lifecycle.svg[Connection pool lifecycle]
+
+The pool is initialised lazily on first use.
+When `BaseArgumentsProvider` first resolves its arguments, its static initialiser calls `DatabaseConnectionManager.initialize()`.
+If `DatabaseTestLifecycle` (see xref:test-lifecycle.adoc[Test lifecycle]) is registered, it initialises and validates the pool before any test class starts, so that configuration errors surface immediately rather than mid-suite.
+
+A JVM shutdown hook registered inside `DatabaseConnectionManager` calls `shutdown()` automatically when the JVM exits.
+This ensures that active connections are drained and the pool is closed cleanly at the end of every test run, even when the run ends abnormally.
+
+NOTE: The connection pool is shared across all test classes and all `BaseArgumentsProvider` subclasses.
+It is created once and closed once, at JVM shutdown.
+Do not call `shutdown()` or `forceShutdown()` from test code unless you are intentionally ending the pool for the remainder of the run.
+
+== Monitoring
+
+`com.snowedunderproductions.graphprobe.database.ConnectionPoolMonitor` is an optional background monitor that periodically samples pool statistics and logs warnings when thresholds are breached.
+
+Thresholds that trigger a warning:
+
+* Pool utilisation above 80 %.
+* Pending acquisition requests above 3.
+* Connection failure rate above 5 %.
+* Active connection count above the leak-risk threshold.
+
+`start()` (or `start(intervalSeconds)`, default 30 s) spawns a daemon scheduled task.
+`stop()` cancels the task.
+`getStatus()` and `isActive()` allow callers to check whether the monitor is running.
+
+In normal use, `ConnectionPoolMonitor` is driven by `HikariStatsListener` — a JUnit Platform `TestExecutionListener` that starts and stops the monitor around the test plan.
+For setup details and the service-provider file required to enable it, see xref:test-lifecycle.adoc[Test lifecycle].

@@ -1,0 +1,481 @@
+= Client test tools
+:description: Reference for all client-layer classes: the GraphQL HTTP client, concurrency throttle, request metrics, deep-link assertion helper, pagination helper, execution profile, and connection-pool diagnostics.
+
+The `com.snowedunderproductions.graphprobe.client` and supporting packages provide everything a consuming test project needs to send GraphQL requests, assert on responses, control concurrency, and surface diagnostic information in Allure reports.
+
+See xref:environment-variables.adoc[] for a complete reference of every environment variable the framework reads.
+
+== Choosing a client
+
+[cols="1,2,2", options="header"]
+|===
+|Client |Transport |Use when
+
+|`GraphQLTestClient`
+|OkHttp (synchronous)
+|Simple queries, spikes, or anywhere minimal behaviour and dependencies matter.
+
+|`SimpleGraphQLClient`
+|OkHttp with throttle, retry, metrics, and Allure attachments
+|Real integration suites — the recommended default for production test projects.
+
+|`GraphQLTestExecutor`
+|Spring WebFlux / Netflix DGS (`WebClient`, `HttpGraphQlTester`)
+|Reactive or DGS-native projects that already have a Spring context available.
+|===
+
+== GraphQL client
+
+=== `client.GraphQLTestClient`
+
+The lowest-level client: a thin, synchronous OkHttp wrapper with no throttling, retry, or metrics.
+It reads `GRAPHQL_URL` (required), `AUTH_HEADER_NAME` (default `Authorization`), and `AUTH_HEADER_VALUE` (optional, omitted when blank) at construction time, and exposes the same core query methods as `SimpleGraphQLClient` below.
+Reach for it in simple scripts or spikes; prefer `SimpleGraphQLClient` for real suites.
+
+=== `client.SimpleGraphQLClient`
+
+A resilient OkHttp-based GraphQL HTTP client that extends the capabilities of the lower-level `GraphQLTestClient`.
+
+`SimpleGraphQLClient` adds:
+
+* a process-wide concurrency throttle (`GraphQLRequestThrottle`) applied automatically around every call,
+* a single retry with jittered backoff for transient failures — specifically socket timeouts, connect timeouts, and HTTP 502/503/504 responses,
+* per-request metrics recorded to `GraphQLRequestMetrics`,
+* Allure attachments of the raw query and response for every call.
+
+.Resilient GraphQL request flow
+image::graphql-client-request-flow.svg[GraphQL client request flow]
+
+[IMPORTANT]
+====
+Mutations and subscriptions are *not* retried.
+Because the effect of a mutation may be partially applied before the failure, a blind retry risks duplicate side-effects.
+====
+
+==== Configuration
+
+Endpoint and authentication are read from environment variables at construction time.
+Timeouts are also environment-driven.
+
+|===
+|Variable |Purpose |Default
+
+|`GRAPHQL_URL`
+|GraphQL endpoint URL (required)
+|—
+
+|`AUTH_HEADER_NAME`
+|Name of the authentication header
+|`Authorization`
+
+|`AUTH_HEADER_VALUE`
+|Value of the authentication header
+|_(not sent)_
+
+|`GRAPHQL_CONNECT_TIMEOUT_SECONDS`
+|OkHttp connect timeout
+|45
+
+|`GRAPHQL_READ_TIMEOUT_SECONDS`
+|OkHttp read timeout
+|45
+
+|`GRAPHQL_WRITE_TIMEOUT_SECONDS`
+|OkHttp write timeout
+|45
+|===
+
+==== Key methods
+
+`executeQuery(query, dataPath)`::
+Executes the given GraphQL query string and extracts a single field from the JSON response using a JsonPath expression.
+Returns the field value as a `String`.
+
+`executeErrorQuery(query)`::
+Executes a query and returns the first error message from the `errors` array.
+Use this when the call is expected to fail.
+
+`executeFullQuery(query)`::
+Returns the raw JSON response body as a `String` without any field extraction.
+
+`executeQueryOrPossibleSpecificError(query, Optional<dataPath>, Optional<expectedError>)`::
+Combines the happy-path and error-path into a single call.
+Returns a `com.snowedunderproductions.graphprobe.client.TestResponse` that carries either the extracted data or the error detail.
+The `expectedError` parameter, when present, asserts that the error message matches.
+
+`assertContains(query, expected...)`::
+Executes the query and asserts that the response body contains every expected substring.
+Fails the test immediately on mismatch.
+
+`assumeDataAssertValues(query, expected...)`::
+Like `assertContains`, but uses JUnit assumptions — the test is skipped rather than failed when the condition is not met.
+Useful when the data set may legitimately be empty in some environments.
+
+`simpleJsonCall(query, dataPath)`::
+A convenience alias for `executeQuery(query, dataPath)` that extracts the value at the given JsonPath expression (used internally by `PaginationTestHelper`).
+It goes through the same throttling, retry, per-request metrics, and Allure attachment path as `executeQuery`.
+
+==== Usage example
+
+[source,java]
+----
+SimpleGraphQLClient client = new SimpleGraphQLClient();
+
+// Extract a single field from a successful response
+String name = client.executeQuery(
+    "{ user(id: \"abc-123\") { name } }",
+    "$.data.user.name"
+);
+assertThat(name).isEqualTo("Alice");
+
+// Verify that a mutation returns an error when input is invalid
+String error = client.executeErrorQuery(
+    "mutation { createUser(name: \"\") { id } }"
+);
+assertThat(error).contains("Name must not be blank");
+----
+
+TIP: Construct a single `SimpleGraphQLClient` instance per test class (or per suite) and share it.
+The underlying OkHttp client and connection pool are thread-safe and expensive to create.
+
+=== `client.TestResponse`
+
+`executeQueryOrPossibleSpecificError` returns an immutable `TestResponse` record instead of throwing, so a call that may legitimately succeed or fail can be handled in one place.
+
+* `success` — `true` when the response carried no errors.
+* `data` / `error` — the extracted data value and the first error message; either may be empty.
+* `hasData()` / `hasError()` — null-safe presence checks.
+* `dataOnlySuccess()` / `errorOnlySuccess()` — assert that exactly the data (respectively the error) path was taken.
+* `containsData(substring)` / `containsError(substring)` — substring checks on the respective field.
+
+=== `client.GraphQLTestExecutor`
+
+A reactive client built on Spring WebFlux and Netflix DGS (`WebClient`, `WebTestClient`, `WebClientGraphQLClient`, and `HttpGraphQlTester`).
+Use it when the test project already runs a Spring application context and you want to exercise the DGS infrastructure rather than raw HTTP.
+
+`simpleCall(query, jsonPath)`::
+Executes the query and returns the JsonPath-extracted value as a `String`.
+
+`simpleJsonCall(query, jsonPath)`::
+As above, but returns the raw node as a JSON-string fragment.
+
+`simpleErrorCall(...)`::
+Returns the first error message for a call expected to fail.
+
+`simpleCallWithToken(query, token, apiGateway)`::
+Adds a bearer token and an API-gateway header to the request.
+
+Authentication headers and timeouts are environment-driven — see the reactive executor variables in xref:environment-variables.adoc[].
+
+[source,java]
+----
+@Autowired
+GraphQLTestExecutor executor;
+
+@Test
+void fetchesUserById() {
+    String name = executor.simpleCall(
+        "{ user(id: \"u-1\") { name } }",
+        "$.data.user.name");
+    assertThat(name).isNotBlank();
+}
+----
+
+== Concurrency and metrics
+
+=== `client.GraphQLRequestThrottle`
+
+A process-wide semaphore that caps the number of GraphQL requests in flight simultaneously, preventing a suite with many parallel test forks from saturating a shared or locally started server.
+
+The permit count is set once at class load from `GRAPHQL_MAX_CONCURRENT` (default 16).
+Set the variable to `0` to disable the throttle entirely (all permits are effectively unlimited).
+
+`SimpleGraphQLClient` calls `acquire()` before each request and `release()` in a `finally` block, so consuming code never needs to interact with this class directly.
+
+==== Static API
+
+|===
+|Method |Description
+
+|`acquire()`
+|Blocks up to 120 seconds for a permit; returns `true` if acquired, `false` on timeout.
+
+|`release()`
+|Returns a permit to the pool.
+
+|`configuredPermits()`
+|Returns the value read from `GRAPHQL_MAX_CONCURRENT` at start-up.
+
+|`availablePermits()`
+|Returns the number of permits not currently held.
+|===
+
+=== `client.GraphQLRequestMetrics`
+
+Collects runtime statistics for the request layer across the lifetime of the test process.
+
+Counters and gauges tracked:
+
+* total call count,
+* overall request rate and a rolling-window rate,
+* time spent waiting for a `GraphQLRequestThrottle` permit,
+* request duration (min, mean, max),
+* in-flight request count,
+* error count,
+* retry count.
+
+`GraphQLRequestMetrics` logs an INFO-level summary every 30 seconds while the JVM is running and emits a final summary on JVM shutdown via a shutdown hook.
+
+Calls are also attributed to per-test-class buckets.
+Attribution is performed by walking the call stack and finding the first frame that belongs to a test class.
+A class qualifies as a test class when its simple name ends in `Test` or `IT`, unless `GRAPHQL_TEST_PACKAGE_PREFIX` is set — in which case only frames whose package begins with that prefix are considered.
+
+NOTE: Stack-walking attribution has a small cost per call.
+In suites with very large numbers of short tests this is negligible, but it is worth knowing that the attribution mechanism is not free.
+
+=== `client.GraphQLMetricsExtension`
+
+A JUnit 5 `AfterAllCallback` that publishes the per-test-class `GraphQLRequestMetrics` summary to the Allure report at the end of each test class.
+
+Register it on any test class that uses `SimpleGraphQLClient`:
+
+[source,java]
+----
+@ExtendWith(GraphQLMetricsExtension.class)
+class UserQueryIT {
+
+    private final SimpleGraphQLClient client = new SimpleGraphQLClient();
+
+    @Test
+    void fetchesUserByIdSuccessfully() {
+        String name = client.executeQuery(
+            "{ user(id: \"u-1\") { name } }",
+            "$.data.user.name"
+        );
+        assertThat(name).isNotBlank();
+    }
+}
+----
+
+The extension requires no further configuration.
+It reads from the same `GraphQLRequestMetrics` instance that `SimpleGraphQLClient` writes to.
+
+== Assertions and pagination
+
+=== `client.DeepLinkTestHelper`
+
+A generic JSON-tree assertion helper for validating nested and resolved fields in a GraphQL JSON response.
+
+Navigation uses a `/`-separated path string.
+When a path segment resolves to a JSON array, the helper automatically descends into the *first element* of that array and continues the traversal.
+This matches the common pattern where a GraphQL list field wraps a single resolved object.
+
+Both `assert*` and `assume*` variants are provided for every operation.
+`assert*` methods fail the test; `assume*` methods skip it (JUnit assumption semantics).
+
+==== Methods
+
+|===
+|Method |Behaviour on failure
+
+|`parseJson(json, context)` / `parseJson(json, context, query)`
+|Parses the raw JSON string into a `JsonNode`; calls JUnit `fail(...)` if the input is null, empty, or unparseable.
+The optional `query` argument includes the originating GraphQL query in the failure message.
+
+|`assertFieldExists(root, path, context)` / `assumeFieldExists(root, path, context)`
+|Checks that the field at `path` is present and non-null.
+`assert*` fails; `assume*` skips.
+
+|`assertFieldsExist(root, context, paths...)`
+|Bulk form of `assertFieldExists` for multiple paths.
+
+|`assertArrayNotEmpty(root, path, context)` / `assumeArrayNotEmpty(root, path, context)`
+|Checks that the array at `path` has at least one element.
+`assert*` fails; `assume*` skips.
+
+|`assertFieldEquals(root, path, expectedValue, context)`
+|Checks that the field value equals `expectedValue`.
+Skips the test (JUnit assumption) when `expectedValue` is `null`.
+
+|`assertFieldEqualsIfPresent(root, path, expectedValue, context)`
+|Silently does nothing when `expectedValue` is `null` or the field is absent/null in the response; otherwise asserts equality.
+
+|`assertArrayContainsValue(root, arrayPath, childField, expectedValue, context)`
+|Checks that at least one element in the array has `childField` equal to `expectedValue`.
+
+|`findNodeByFields(arrayJson, context, fieldChecks...)`
+|Takes a JSON array string and pairs of `[fieldName, expectedValue, ...]`.
+Skips the test if the array is empty; fails if no element matches all field checks.
+Returns the first matching `JsonNode` (not wrapped in `Optional`).
+
+|`assertDeepLink(jsonResult, context, nestedFieldPath, idFieldChecks...)` / `assumeDeepLink(...)`
+|Parses the JSON result string, asserts each root identifier field pair matches its expected value, then asserts the nested field path exists and (when it resolves to an array) is non-empty.
+`assert*` fails; `assume*` skips.
+|===
+
+==== Usage example
+
+[source,java]
+----
+String json = client.executeFullQuery(
+    "{ order(id: \"ord-99\") { lines { product { sku } } status } }"
+);
+JsonNode root = DeepLinkTestHelper.parseJson(json, "order deep link");
+
+// Assert a directly nested scalar
+DeepLinkTestHelper.assertFieldEquals(root, "data/order/status", "SHIPPED", "order deep link");
+
+// Assert root id fields, then navigate to a nested field (array non-empty check)
+DeepLinkTestHelper.assertDeepLink(
+    json, "order deep link",
+    "data/order/lines/product",
+    "data/order/id", "ord-99"
+);
+----
+
+=== `client.PaginationTestHelper`
+
+Iterates pages of a paginated GraphQL query, asserting or assuming expected fields on each page, and stopping cleanly on the first partial or empty page.
+
+Page geometry is controlled by three environment variables:
+
+|===
+|Variable |Purpose |Default
+
+|`GRAPHQL_FIRST_PAGE`
+|Zero-based index of the first page to request
+|0
+
+|`GRAPHQL_PAGE_SIZE`
+|Number of items requested per page
+|100
+
+|`GRAPHQL_MAX_PAGE`
+|Maximum number of pages to iterate
+|10
+|===
+
+NOTE: When `ITEST_PROFILE=fast` is active, `GRAPHQL_MAX_PAGE` is automatically clamped to 3, regardless of the configured value.
+See xref:client-tools.adoc#test-profile[`config.TestProfile`] for details.
+
+Two entry points are provided:
+
+`paginateAndAssert(...)`::
+Fails the test if a page is empty before the first partial page is reached.
+
+`paginateAndAssume(...)`::
+Skips the test (JUnit assumption semantics) instead of failing, for data sets that may legitimately be empty in some environments.
+
+Each takes a `queryBuilder` of type `Function<Integer, GraphQLQuery>` (mapping a page index to a Netflix DGS query), a DGS `BaseSubProjectionNode` projection, the JsonPath to the result array, a `testName` used in log output, and the `expectedFields` that must be present on every item.
+A fuller overload also accepts a `BiFunction<String, String, String>` JSON caller — query string and JsonPath in, extracted JSON out — together with explicit `pageSize` and `maxPage` arguments, decoupling the helper from any specific client.
+
+==== Usage example
+
+[source,java]
+----
+PaginationTestHelper.paginateAndAssert(
+    page -> new ProductsGraphQLQuery.Builder()      // Function<Integer, GraphQLQuery>
+        .page(page)
+        .build(),
+    new ProductsProjectionRoot<>().id().name().price(),
+    "$.data.products",
+    "products pagination",                          // testName, used in log output
+    "id", "name"                                    // fields expected on every item
+);
+----
+
+== Execution profile
+
+[#test-profile]
+=== `config.TestProfile`
+
+An opt-in execution profile that trims call-heavy test paths in environments where speed matters more than full coverage (for example, a local developer loop or a fast-feedback CI stage).
+
+Two values are defined: `DEFAULT` and `FAST`.
+
+The active profile is selected at class load from (in order of precedence):
+
+1. The `ITEST_PROFILE` JVM system property.
+2. The `test.profile` JVM system property (set automatically by `build.gradle` when `-Ptest.profile=fast` is passed to Gradle).
+3. The `ITEST_PROFILE` environment variable (also read from a `.env` file via `EnvConfig`).
+
+The profile is read once and cached; there is no per-test evaluation cost.
+
+==== API
+
+|===
+|Method |Description
+
+|`current()`
+|Returns the active `TestProfile` enum constant.
+
+|`isFast()`
+|Returns `true` when `FAST` is active.
+
+|`clampMaxPage(int requested)`
+|Returns `requested` unchanged under `DEFAULT`; clamps to 3 under `FAST`.
+
+|`clampSqlLimit(String defaultLimit)`
+|Returns `defaultLimit` unchanged under `DEFAULT`; under `FAST` returns the smaller of `defaultLimit` and `"50"` as a `String`.
+Does not modify any SQL clause — the returned value is intended to be substituted into a SQL template.
+
+|`iterations(int n)`
+|Returns `n` under `DEFAULT`; returns `min(n, 5)` under `FAST`.
+
+|`warmup(int n)`
+|Returns `n` under `DEFAULT`; returns `min(n, 1)` under `FAST`.
+|===
+
+==== Usage example
+
+[source,java]
+----
+int maxPages = TestProfile.clampMaxPage(
+    Integer.parseInt(EnvConfig.get("GRAPHQL_MAX_PAGE", "10"))
+);
+
+for (int page = 0; page < maxPages; page++) {
+    // paginate and assert
+}
+----
+
+TIP: Wrap any loop bound or iteration count through the appropriate `TestProfile` method.
+This keeps the FAST-profile logic in one place and avoids scattered `if (isFast())` conditionals throughout test code.
+
+== Connection-pool diagnostics
+
+=== `database.HikariStatsListener`
+
+A JUnit Platform `TestExecutionListener` that drives `ConnectionPoolMonitor` for the duration of a test plan, causing connection-pool saturation events and leaks to surface in the logs.
+
+The listener is *not* auto-registered.
+Enable it by creating the service-provider file:
+
+.`src/test/resources/META-INF/services/org.junit.platform.launcher.TestExecutionListener`
+[source,text]
+----
+com.snowedunderproductions.graphprobe.database.HikariStatsListener
+----
+
+[IMPORTANT]
+====
+Do not add this file unless you actually need pool diagnostics.
+The listener adds log output for every test plan execution, which adds noise to suites that do not use the database.
+====
+
+The listener lazily no-ops until the HikariCP pool is initialised.
+It never forces a database connection when the test plan does not include any database-backed tests.
+
+The logging interval is controlled by `HIKARI_STATS_INTERVAL_SECONDS` (default 30).
+
+==== What is logged
+
+At each interval, the listener emits an INFO line containing:
+
+* active connection count,
+* idle connection count,
+* pending acquisition count (threads waiting for a connection),
+* total pool size.
+
+A final summary is logged when the test plan completes.
+These entries are sufficient to identify whether the pool is undersized for the degree of test parallelism in use, or whether a test is leaking connections (active count never returns to idle).

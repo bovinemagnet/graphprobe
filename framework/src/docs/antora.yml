@@ -1,0 +1,6 @@
+name: graphprobe
+title: GraphProbe — the GraphQL Integration Testing Framework
+version: ~
+start_page: index.adoc
+nav:
+  - modules/ROOT/nav.adoc

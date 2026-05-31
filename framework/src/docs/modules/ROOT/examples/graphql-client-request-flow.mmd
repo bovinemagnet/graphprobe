@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant Test as "Test method"
+    participant Client as "SimpleGraphQLClient"
+    participant Throttle as "GraphQLRequestThrottle (semaphore)"
+    participant Http as "OkHttp"
+    participant API as "GraphQL endpoint"
+    participant Metrics as "GraphQLRequestMetrics"
+
+    Test->>Client: executeQuery(query, jsonPath)
+
+    Note over Client: Build JSON body, add auth header from EnvConfig AUTH_HEADER_NAME and AUTH_HEADER_VALUE
+
+    Client->>Throttle: acquire()
+
+    Note over Throttle: Semaphore, GRAPHQL_MAX_CONCURRENT default 16, 0 = disabled, waits up to 120 s
+
+    Throttle->>Metrics: recordAcquireWait(waitNanos)
+    Throttle-->>Client: permit granted
+
+    Note over Client: Max attempts = 2 if idempotent query, 1 if mutation or subscription
+
+    loop retry attempts
+        Client->>Http: "newCall(request).execute()"
+        Http->>API: POST query
+        API-->>Http: HTTP response
+        Http-->>Client: response
+
+        alt "SocketTimeout or ConnectException, or HTTP 502/503/504 - retriable and idempotent"
+            Client->>Metrics: recordRetry()
+            Note over Client: Jittered backoff 250-750 ms then retry
+        else success or non-retriable error
+            Note over Client: Break loop
+        end
+    end
+
+    Client->>Metrics: "recordCall(durationNanos, success)"
+
+    Note over Metrics: Stack-walks to attribute the call to the test class
+
+    Note over Client: Attach query, response and error to Allure if active
+
+    Note over Client: Parse via JsonPath, errors at $.errors[0].message, data at requested path
+
+    Client->>Throttle: release()
+    Client-->>Test: "data String or TestResponse"
