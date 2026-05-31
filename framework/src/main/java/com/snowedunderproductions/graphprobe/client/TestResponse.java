@@ -86,13 +86,16 @@ public record TestResponse(boolean success, String data, String error) {
      * @throws AssertionError if the expected error is not found or if there is no error data
      */
     public boolean containsError(@NotNull String expectedError) {
-        assert (!expectedError.isBlank() && !expectedError.isEmpty()) :
-            "The `expectedError` can't be blank or empty";
-        assert (hasError()) :
-            "The `expectedError` cannot be found as there is no error data";
-        assert (error().contains(expectedError)) :
-            "The expectedError:\"" + expectedError +
-            "\" was not found in the error: " + error().substring(0, Math.min(25, error().length())) + "...";
+        if (expectedError.isBlank()) {
+            throw new IllegalArgumentException("The `expectedError` can't be blank or empty");
+        }
+        if (!hasError()) {
+            throw new AssertionError("The `expectedError` cannot be found as there is no error data");
+        }
+        if (!error().contains(expectedError)) {
+            throw new AssertionError("The expectedError:\"" + expectedError +
+                "\" was not found in the error: " + error().substring(0, Math.min(25, error().length())) + "...");
+        }
         return true;
     }
 
@@ -104,13 +107,16 @@ public record TestResponse(boolean success, String data, String error) {
      * @throws AssertionError if the expected data is not found or if there is no data
      */
     public boolean containsData(@NotNull String expectedData) {
-        assert (!expectedData.isBlank() && !expectedData.isEmpty()) :
-            "The `expectedData` can't be blank or empty";
-        assert (hasData()) :
-            "The `expectedData` was not found as there is no data to search";
-        assert (data().contains(expectedData)) :
-            "The expectedData:\"" + expectedData +
-            "\" was not found in the data: " + data().substring(0, Math.min(25, data().length())) + "...";
+        if (expectedData.isBlank()) {
+            throw new IllegalArgumentException("The `expectedData` can't be blank or empty");
+        }
+        if (!hasData()) {
+            throw new AssertionError("The `expectedData` was not found as there is no data to search");
+        }
+        if (!data().contains(expectedData)) {
+            throw new AssertionError("The expectedData:\"" + expectedData +
+                "\" was not found in the data: " + data().substring(0, Math.min(25, data().length())) + "...");
+        }
         return true;
     }
 

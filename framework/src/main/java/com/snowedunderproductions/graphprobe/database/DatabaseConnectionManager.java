@@ -471,6 +471,10 @@ public class DatabaseConnectionManager {
     private void cleanup() {
         dataSource = null;
         initialized.set(false);
+        // Clear the shutdown flag so the manager can be re-initialised in the same JVM
+        // (e.g. test teardown followed by a fresh initialize()); otherwise getConnection()
+        // would keep rejecting connections as "shutting down" after a successful re-init.
+        shutdownInProgress.set(false);
     }
 
     /**

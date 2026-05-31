@@ -200,9 +200,12 @@ public class GraphQLTestExecutor {
      */
     public static String simpleCall(String query, String JSONPath) {
         // The GraphQLResponse contains data and errors.
+        // cache() so the logging subscription below and the terminal block() share a single
+        // HTTP request instead of each re-subscribing to the cold Mono.
         Mono<GraphQLResponse> graphQLResponseMono = graphQLClient
             .reactiveExecuteQuery(query)
-            .timeout(DEFAULT_TEST_TIMEOUT_DURATION);
+            .timeout(DEFAULT_TEST_TIMEOUT_DURATION)
+            .cache();
 
         // GraphQLResponse has convenience methods to extract fields using JsonPath.
         Mono<String> some_field = graphQLResponseMono.map(r ->
@@ -242,9 +245,11 @@ public class GraphQLTestExecutor {
         );
 
         // The GraphQLResponse contains data and errors.
+        // cache() so the blockOptional()/block() pair below resolves a single HTTP request.
         Mono<GraphQLResponse> graphQLResponseMono = graphQLClient
             .reactiveExecuteQuery(query)
-            .timeout(DEFAULT_TEST_LONG_TIMEOUT_DURATION);
+            .timeout(DEFAULT_TEST_LONG_TIMEOUT_DURATION)
+            .cache();
 
         Mono<LinkedHashMap<String, Object>> obj = graphQLResponseMono.flatMap(r -> {
             if (r.hasErrors()) {
@@ -310,9 +315,12 @@ public class GraphQLTestExecutor {
      */
     public static String simpleErrorCall(String query, String JSONPath) {
         // The GraphQLResponse contains data and errors.
+        // cache() so the logging subscription plus the blockOptional()/block() pair all share a
+        // single HTTP request instead of firing three against the server.
         Mono<GraphQLResponse> graphQLResponseMono = graphQLClient
             .reactiveExecuteQuery(query)
-            .timeout(DEFAULT_TEST_TIMEOUT_DURATION);
+            .timeout(DEFAULT_TEST_TIMEOUT_DURATION)
+            .cache();
 
         graphQLResponseMono.subscribe(
             value -> log.debug(value.toString()),
@@ -370,19 +378,21 @@ public class GraphQLTestExecutor {
         String token,
         String apiGW
     ) {
-        WebTestClient localWebTestClient = WebTestClient.bindToServer()
+        WebTestClient.Builder builder = WebTestClient.bindToServer()
             .baseUrl(GRAPHQL_URL)
-            .defaultHeader("Content-Type", MediaType.APPLICATION_JSON_VALUE)
-            .build();
+            .defaultHeader("Content-Type", MediaType.APPLICATION_JSON_VALUE);
 
-        HttpGraphQlTester customTester = HttpGraphQlTester.create(
-            localWebTestClient
-        );
+        if (token != null && !token.isEmpty()) {
+            builder.defaultHeader(AUTH_HEADER_NAME, token);
+        }
+        if (apiGW != null && !apiGW.isEmpty()) {
+            builder.defaultHeader(API_GW_HEADER_NAME, apiGW);
+        }
+
+        HttpGraphQlTester customTester = HttpGraphQlTester.create(builder.build());
 
         return customTester
             .document(query)
-            .variable("pageNumber", 0)
-            .variable("pageSize", 1)
             .execute();
     }
 }

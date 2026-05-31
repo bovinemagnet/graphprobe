@@ -1,5 +1,6 @@
 package com.snowedunderproductions.graphprobe.annotations;
 
+import com.snowedunderproductions.graphprobe.config.EnvConfig;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -89,9 +90,9 @@ public class DynamicSourceProvider
     public Stream<? extends Arguments> provideArguments(
         ExtensionContext context
     ) throws Exception {
-        String useCsvEnv = System.getenv("USE_CSV");
+        boolean useCsv = EnvConfig.getBoolean("USE_CSV", false);
 
-        if ("true".equalsIgnoreCase(useCsvEnv) && !csvResource.isEmpty()) {
+        if (useCsv && !csvResource.isEmpty()) {
             log.info("Using CSV file: {}", csvResource);
             List<String> csvLines = readCsvFile(csvResource);
             return loadCsvArguments(csvLines, delimiter, linesToSkip);
