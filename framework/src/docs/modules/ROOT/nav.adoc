@@ -3,6 +3,7 @@
 * xref:architecture.adoc[Architecture]
 * xref:database-providers.adoc[Database Test Providers]
 * xref:client-tools.adoc[Client Test Tools]
+* xref:error-and-version-gating.adoc[Error Paths & Version Gating]
 * xref:property-testing.adoc[Property-Based Testing]
 * xref:test-lifecycle.adoc[Test Lifecycle]
 * xref:environment-variables.adoc[Environment Variables]
