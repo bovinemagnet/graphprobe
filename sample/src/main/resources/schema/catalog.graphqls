@@ -1,0 +1,36 @@
+# Domain-neutral schema used by the GraphProbe sample tests to demonstrate
+# pagination, deep-link assertions and mutation error handling without any
+# real backend. Consumed by DGS codegen (see sample/build.gradle).
+type Query {
+  products(pageNumber: Int!, pageSize: Int!): [Product!]!
+  product(id: ID!): Product
+}
+
+type Mutation {
+  addProduct(input: ProductInput): AddProductResult
+}
+
+type Product {
+  id: ID!
+  name: String!
+  price: Float!
+  owner: Owner!
+  tags: [String!]!
+}
+
+type Owner {
+  id: ID!
+  name: String!
+  email: String!
+}
+
+input ProductInput {
+  name: String
+  price: Float
+  ownerId: ID
+}
+
+type AddProductResult {
+  id: ID
+  errors: [String!]
+}
