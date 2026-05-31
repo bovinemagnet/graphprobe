@@ -1,0 +1,42 @@
+= Error paths and version gating
+
+This page covers two patterns for tests that must behave correctly when an API
+returns errors, and for tests that should only run against certain system
+versions.
+
+== Validating error responses
+
+`executeQueryOrPossibleSpecificError` returns a `TestResponse` that treats an
+expected error message as success — ideal for negative-path and validation tests:
+
+[source,java]
+----
+TestResponse response = client.executeQueryOrPossibleSpecificError(
+    "mutation { addProduct(input: null) { id errors } }",
+    Optional.empty(),                 // no data path — we expect an error
+    Optional.of("must not be null")); // the error we expect to see
+
+assertThat(response.success()).isTrue();
+assertThat(response.error()).contains("must not be null");
+----
+
+If a data path is supplied instead, the same method succeeds when data is present
+and no error occurs, letting one method cover both the positive and negative case.
+
+== Gating tests by system version
+
+Annotate a test (or class) with `@EnabledForVersion` to run it only when the
+system under test is at or above a minimum semantic version. The current version
+comes from the `currentVersion` system property (default `0.0.0`):
+
+[source,java]
+----
+@Test
+@EnabledForVersion(minimumVersion = "2.0.0")
+void usesAFeatureAddedInTwoPointZero() {
+    // runs only when -DcurrentVersion >= 2.0.0
+}
+----
+
+Run the suite with `-DcurrentVersion=2.1.0` to enable version-gated tests for that
+release. Tests gated above the current version are reported as skipped, not failed.
