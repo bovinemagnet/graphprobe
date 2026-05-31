@@ -37,6 +37,8 @@ public class GraphProbeCodegenPlugin implements Plugin<Project> {
             task.getFixtureMappingsFile().set(extension.getFixtureMappingsFile());
             task.getFixtureMappingsFingerprint().set(project.provider(() ->
                 GenerateGraphProbeTestsTask.fingerprint(extension.getFixtureMappingsDsl().getMappings())));
+            task.getDslFixtureMappings().putAll(project.provider(() ->
+                extension.getFixtureMappingsDsl().getMappings()));
         });
 
         project.getPlugins().withType(JavaPlugin.class, ignored -> {

@@ -90,6 +90,8 @@ class GraphProbeCodegenEngineTest {
 
         FixtureMapping mapping = new FixtureMapping();
         mapping.setSql("SELECT id FROM users LIMIT 10");
+        mapping.setCsvResource("/graphprobe-fixtures/users.csv");
+        mapping.setLinesToSkip(1);
         mapping.getArguments().put("id", "id");
         config.getFixtureMappings().put("Query.user", mapping);
 
@@ -98,6 +100,7 @@ class GraphProbeCodegenEngineTest {
         Path fixtureTest = tempDir.resolve("out/com/example/generated/graphprobe/GeneratedFixtureBackedTest.java");
         assertThat(Files.readString(fixtureTest))
             .contains("import com.example.generated.graphprobe.providers.QueryuserArgumentsProvider;")
+            .contains("@DynamicSource(argumentsProvider = QueryuserArgumentsProvider.class, csvResource = \"/graphprobe-fixtures/users.csv\", delimiter = ',', linesToSkip = 1)")
             .contains("user(id: $id)")
             .contains("{ id name }");
 

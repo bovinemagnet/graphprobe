@@ -57,14 +57,18 @@ class GraphProbeCodegenPluginTest {
         GenerateGraphProbeTestsTask task = configuredTask(schema, "fixture", extension ->
             extension.fixtureMappings(dsl -> dsl.operation("Query.user", spec -> {
                 spec.setSql("SELECT id FROM users LIMIT 10");
+                spec.setCsvResource("/graphprobe-fixtures/users.csv");
+                spec.setLinesToSkip(1);
                 spec.argument("id", "id");
             })));
 
         task.generate();
 
         Path provider = projectDir.resolve("out/com/example/generated/providers/QueryuserArgumentsProvider.java");
+        Path fixtureTest = projectDir.resolve("out/com/example/generated/GeneratedFixtureBackedTest.java");
         assertThat(provider).exists();
         assertThat(Files.readString(provider)).contains("SELECT id FROM users LIMIT 10");
+        assertThat(Files.readString(fixtureTest)).contains("csvResource = \"/graphprobe-fixtures/users.csv\"");
     }
 
     @Test
@@ -87,11 +91,13 @@ class GraphProbeCodegenPluginTest {
         FixtureMappingsDsl original = new FixtureMappingsDsl();
         original.operation("Query.user", spec -> {
             spec.setSql("SELECT 1");
+            spec.setCsvResource("/original.csv");
             spec.argument("id", "id");
         });
         FixtureMappingsDsl changed = new FixtureMappingsDsl();
         changed.operation("Query.user", spec -> {
             spec.setSql("SELECT 2");
+            spec.setCsvResource("/changed.csv");
             spec.argument("id", "id");
         });
 

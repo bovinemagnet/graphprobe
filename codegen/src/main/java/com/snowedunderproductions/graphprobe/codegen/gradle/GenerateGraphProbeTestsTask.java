@@ -10,10 +10,12 @@ import org.gradle.api.file.ConfigurableFileCollection;
 import org.gradle.api.file.DirectoryProperty;
 import org.gradle.api.file.RegularFileProperty;
 import org.gradle.api.provider.ListProperty;
+import org.gradle.api.provider.MapProperty;
 import org.gradle.api.provider.Property;
 import org.gradle.api.tasks.Input;
 import org.gradle.api.tasks.InputFile;
 import org.gradle.api.tasks.InputFiles;
+import org.gradle.api.tasks.Internal;
 import org.gradle.api.tasks.Optional;
 import org.gradle.api.tasks.OutputDirectory;
 import org.gradle.api.tasks.TaskAction;
@@ -73,6 +75,15 @@ public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
     @Optional
     public abstract Property<String> getFixtureMappingsFingerprint();
 
+    /**
+     * The DSL {@code fixtureMappings { }} specs, captured by the plugin at configuration time.
+     * Marked {@link Internal} because change detection is handled by {@link #getFixtureMappingsFingerprint()};
+     * holding the specs here lets the task action read them without accessing {@code Task.project} at
+     * execution time (which is deprecated and incompatible with the configuration cache).
+     */
+    @Internal
+    public abstract MapProperty<String, FixtureMappingSpec> getDslFixtureMappings();
+
     @TaskAction
     public void generate() throws IOException {
         CodegenConfig config = new CodegenConfig();
@@ -102,12 +113,9 @@ public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
             }
         }
 
-        Object extensionObject = getProject().getExtensions().findByName("graphProbeCodegen");
-        if (extensionObject instanceof GraphProbeCodegenExtension extension) {
-            // DSL mappings overlay (and override) YAML mappings on a key collision.
-            extension.getFixtureMappingsDsl().getMappings()
-                .forEach((operation, spec) -> fixtureMappings.put(operation, toFixtureMapping(spec)));
-        }
+        // DSL mappings overlay (and override) YAML mappings on a key collision.
+        getDslFixtureMappings().get()
+            .forEach((operation, spec) -> fixtureMappings.put(operation, toFixtureMapping(spec)));
 
         config.setFixtureMappings(fixtureMappings);
 
@@ -128,6 +136,9 @@ public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
     private static FixtureMapping toFixtureMapping(FixtureMappingSpec spec) {
         FixtureMapping mapping = new FixtureMapping();
         mapping.setSql(spec.getSql());
+        mapping.setCsvResource(spec.getCsvResource());
+        mapping.setDelimiter(spec.getDelimiter());
+        mapping.setLinesToSkip(spec.getLinesToSkip());
         mapping.setArguments(new LinkedHashMap<>(spec.getArguments()));
         return mapping;
     }
@@ -142,7 +153,8 @@ public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
                     .sorted(Map.Entry.comparingByKey())
                     .map(arg -> arg.getKey() + "=" + arg.getValue())
                     .collect(Collectors.joining(","));
-                return entry.getKey() + "|" + spec.getSql() + "|" + arguments;
+                return entry.getKey() + "|" + spec.getSql() + "|" + spec.getCsvResource()
+                    + "|" + spec.getDelimiter() + "|" + spec.getLinesToSkip() + "|" + arguments;
             })
             .collect(Collectors.joining(";"));
     }

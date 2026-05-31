@@ -15,7 +15,9 @@ java {
 }
 
 dependencies {
-    implementation project(':framework')
+    if (findProject(':framework') != null) {
+        implementation project(':framework')
+    }
     implementation libs.jackson.databind
     implementation libs.jackson.dataformat.yaml
     implementation libs.graphql.java

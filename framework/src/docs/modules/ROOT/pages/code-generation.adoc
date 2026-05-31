@@ -118,6 +118,8 @@ graphProbeCodegen {
     fixtureMappings {
         operation("Query.user") {
             sql = "SELECT id FROM users WHERE active = true LIMIT 50"
+            csvResource = "/test-data/user-ids.csv" // optional fallback when USE_CSV=true
+            linesToSkip = 1
             argument("id", "id")
         }
     }
@@ -138,6 +140,8 @@ operationTypes:
 fixtureMappings:
   Query.user:
     sql: SELECT id FROM users WHERE active = true LIMIT 50
+    csvResource: /test-data/user-ids.csv
+    linesToSkip: 1
     arguments:
       id: id
 ----
@@ -152,6 +156,7 @@ graphProbeCodegen {
 ----
 
 Generated providers extend `BaseArgumentsProvider`, so database settings still come from the standard `POSTGRES_URL`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` variables.
+When a fixture mapping includes `csvResource`, the generated `@DynamicSource` also points at that classpath resource; setting `USE_CSV=true` makes the generated fixture test use CSV rows instead of the database provider.
 
 == DGS codegen integration
 

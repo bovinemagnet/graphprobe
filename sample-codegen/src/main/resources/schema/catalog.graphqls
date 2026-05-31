@@ -1,0 +1,25 @@
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+type Query {
+  product(id: ID!): Product
+}
+
+type Mutation {
+  addReview(productId: ID!): Review
+}
+
+type Product {
+  id: ID!
+  sku: String!
+  name: String!
+  price: Float
+  available: Boolean!
+}
+
+type Review {
+  id: ID!
+  productId: ID!
+}

@@ -72,6 +72,18 @@ final class JavaNaming {
         return input.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
     }
 
+    /** Escapes a character so it can be embedded inside a Java {@code '...'} char literal. */
+    static String javaChar(char input) {
+        return switch (input) {
+            case '\\' -> "\\\\";
+            case '\'' -> "\\'";
+            case '\n' -> "\\n";
+            case '\r' -> "\\r";
+            case '\t' -> "\\t";
+            default -> Character.toString(input);
+        };
+    }
+
     static String indent(String input, int spaces) {
         String prefix = " ".repeat(spaces);
         return input.lines().map(line -> prefix + line).collect(Collectors.joining("\n"));

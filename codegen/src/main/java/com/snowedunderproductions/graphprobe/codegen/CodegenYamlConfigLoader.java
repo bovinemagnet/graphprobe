@@ -62,7 +62,6 @@ public class CodegenYamlConfigLoader {
         public List<String> schemaFiles = new ArrayList<>();
         public String basePackage;
         public String dgsCodegenPackage;
-        // note: csvResource on FixtureMapping was removed; YAML keys for it are ignored.
         public String outputDirectory;
         public String persistentOutputDirectory;
         public Integer maxOperations;

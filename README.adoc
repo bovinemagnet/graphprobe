@@ -160,6 +160,8 @@ graphProbeCodegen {
     fixtureMappings {
         operation('Query.user') {
             sql = 'SELECT id FROM users LIMIT 50'
+            csvResource = '/test-data/user-ids.csv' // optional fallback when USE_CSV=true
+            linesToSkip = 1
             argument('id', 'id')
         }
     }

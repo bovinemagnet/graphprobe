@@ -1,0 +1,117 @@
+/*
+ * GraphProbe - Codegen Sample Consumer Module
+ *
+ * Demonstrates how a downstream-style Java test project wires the GraphProbe
+ * codegen Gradle plugin, points it at a local schema, and runs the generated
+ * tests against an offline GraphQL stub.
+ *
+ * Consumption modes:
+ *   ./gradlew :sample-codegen:test                -> depends on in-build :framework
+ *   ./gradlew :sample-codegen:test -PuseMavenLocal -> depends on the mavenLocal
+ *                                                    graphprobe artifact.
+ */
+
+plugins {
+    id 'java'
+    id 'com.snowedunderproductions.graphprobe.codegen'
+}
+
+description = 'Example consumer demonstrating GraphProbe code generation'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+dependencies {
+    if (project.hasProperty('useMavenLocal')) {
+        testImplementation "com.snowedunderproductions:graphprobe:${version}"
+    } else {
+        testImplementation project(':framework')
+    }
+
+    testRuntimeOnly libs.logback.classic
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+graphProbeCodegen {
+    schemaFiles.from(layout.projectDirectory.file('src/main/resources/schema/catalog.graphqls'))
+    basePackage = 'com.snowedunderproductions.graphprobe.sample.codegen.generated'
+    testStyle = 'all'
+    operationTypes = ['query', 'mutation']
+    maxOperations = 10
+
+    fixtureMappings {
+        operation('Query.product') {
+            sql = 'SELECT id FROM products WHERE active = true LIMIT 3'
+            csvResource = '/graphprobe-fixtures/product-ids.csv'
+            linesToSkip = 1
+            argument('id', 'id')
+        }
+    }
+}
+
+def sampleStubServer = null
+
+tasks.register('stopSampleCodegenStub') {
+    doLast {
+        if (sampleStubServer != null) {
+            sampleStubServer.stop(0)
+            sampleStubServer = null
+        }
+    }
+}
+
+test {
+    useJUnitPlatform()
+
+    environment 'USE_CSV', 'true'
+    environment 'GRAPHQL_CONNECT_TIMEOUT_SECONDS', '2'
+    environment 'GRAPHQL_READ_TIMEOUT_SECONDS', '2'
+    environment 'GRAPHQL_WRITE_TIMEOUT_SECONDS', '2'
+
+    doFirst {
+        sampleStubServer = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress('127.0.0.1', 0), 0)
+        sampleStubServer.setExecutor(java.util.concurrent.Executors.newCachedThreadPool())
+        sampleStubServer.createContext('/graphql') { exchange ->
+            try {
+                String body = new String(exchange.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+                String json = graphQlResponse(body)
+                byte[] bytes = json.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                exchange.getResponseHeaders().add('Content-Type', 'application/json')
+                exchange.getResponseHeaders().add('Connection', 'close')
+                exchange.sendResponseHeaders(200, bytes.length)
+                exchange.getResponseBody().withCloseable { responseBody ->
+                    responseBody.write(bytes)
+                }
+            } finally {
+                exchange.close()
+            }
+        }
+        sampleStubServer.start()
+        environment 'GRAPHQL_URL', "http://127.0.0.1:${sampleStubServer.getAddress().getPort()}/graphql"
+    }
+
+    finalizedBy tasks.named('stopSampleCodegenStub')
+
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
+}
+
+String graphQlResponse(String requestBody) {
+    if (requestBody.contains('addReview(')) {
+        return '{"data":{"addReview":{"id":"review-1","productId":"1"}}}'
+    }
+    if (requestBody.contains('product(')) {
+        return '{"data":{"product":' + productJson('1') + '}}'
+    }
+    return '{"data":{"__typename":"SampleCatalog"}}'
+}
+
+String productJson(String id) {
+    return '{"id":"' + id + '","sku":"SKU-' + id + '","name":"Generated Product ' + id + '","price":12.50,"available":true}'
+}

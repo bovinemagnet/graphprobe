@@ -58,7 +58,7 @@ final class TestSourceGenerator {
                 sources.put("providers/" + providerName + ".java",
                     provider(basePackage, schemaHash, providerName, operation, mapping));
                 fixtureBindings.add(new FixtureTestBinding(operation, providerName,
-                    new ArrayList<>(mapping.getArguments().keySet()), generatedOperation));
+                    new ArrayList<>(mapping.getArguments().keySet()), generatedOperation, mapping));
             }
             sources.put("GeneratedFixtureBackedTest.java",
                 fixtureTest(basePackage, schemaHash, fixtureBindings, registry));
@@ -214,7 +214,7 @@ final class TestSourceGenerator {
             String operationName = queryBuilder.generatedOperationName(binding.operationDefinition());
 
             return "    @ParameterizedTest\n"
-                + "    @DynamicSource(argumentsProvider = " + binding.providerName() + ".class)\n"
+                + "    " + dynamicSourceAnnotation(binding) + "\n"
                 + "    void fixture_" + JavaNaming.safeName(opField) + "(" + args + ") throws Exception {\n"
                 + "        String query = \"\"\"\n" + JavaNaming.indent(query, 8) + "\n        \"\"\";\n"
                 + fixtureVariables(binding, registry)
@@ -241,6 +241,17 @@ final class TestSourceGenerator {
             + methods + "\n"
             + variableConversionHelpers()
             + "}\n";
+    }
+
+    private String dynamicSourceAnnotation(FixtureTestBinding binding) {
+        FixtureMapping mapping = binding.mapping();
+        if (mapping.getCsvResource() == null || mapping.getCsvResource().isBlank()) {
+            return "@DynamicSource(argumentsProvider = " + binding.providerName() + ".class)";
+        }
+        return "@DynamicSource(argumentsProvider = " + binding.providerName()
+            + ".class, csvResource = \"" + JavaNaming.javaString(mapping.getCsvResource())
+            + "\", delimiter = '" + JavaNaming.javaChar(mapping.getDelimiter())
+            + "', linesToSkip = " + mapping.getLinesToSkip() + ")";
     }
 
     private List<PropertyBinding> propertyBindings(List<GeneratedOperation> operations, TypeDefinitionRegistry registry) {
@@ -392,7 +403,8 @@ final class TestSourceGenerator {
             + "    }\n";
     }
 
-    private record FixtureTestBinding(String operation, String providerName, List<String> arguments, GeneratedOperation operationDefinition) { }
+    private record FixtureTestBinding(String operation, String providerName, List<String> arguments,
+                                      GeneratedOperation operationDefinition, FixtureMapping mapping) { }
 
     private record PropertyBinding(GeneratedOperation operation, InputValueDefinition argument) { }
 }

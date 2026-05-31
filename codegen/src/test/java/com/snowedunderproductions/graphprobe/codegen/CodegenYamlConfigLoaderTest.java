@@ -29,6 +29,9 @@ class CodegenYamlConfigLoaderTest {
             fixtureMappings:
               Query.user:
                 sql: SELECT id FROM users LIMIT 10
+                csvResource: /graphprobe-fixtures/users.csv
+                delimiter: ","
+                linesToSkip: 1
                 arguments:
                   id: id
             """);
@@ -45,6 +48,9 @@ class CodegenYamlConfigLoaderTest {
         assertThat(config.getFixtureMappings()).containsKey("Query.user");
         FixtureMapping mapping = config.getFixtureMappings().get("Query.user");
         assertThat(mapping.getSql()).isEqualTo("SELECT id FROM users LIMIT 10");
+        assertThat(mapping.getCsvResource()).isEqualTo("/graphprobe-fixtures/users.csv");
+        assertThat(mapping.getDelimiter()).isEqualTo(',');
+        assertThat(mapping.getLinesToSkip()).isEqualTo(1);
         assertThat(mapping.getArguments()).containsEntry("id", "id");
     }
 

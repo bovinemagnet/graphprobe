@@ -2,8 +2,9 @@
  * GraphProbe - Root Aggregator Build
  *
  * This is a Gradle multi-project build:
- *   :framework  - the reusable GraphQL integration-test library (published artifact)
- *   :sample     - an example consumer demonstrating how to use the framework
+ *   :framework      - the reusable GraphQL integration-test library (published artifact)
+ *   :sample         - an example consumer demonstrating how to use the framework
+ *   :sample-codegen - an example consumer demonstrating generated GraphProbe tests
  *
  * Shared configuration (group, version, repositories) is applied to every module
  * here. Module-specific configuration lives in each module's build.gradle.
