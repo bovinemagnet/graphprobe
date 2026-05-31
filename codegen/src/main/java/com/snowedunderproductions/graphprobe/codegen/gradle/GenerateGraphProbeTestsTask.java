@@ -20,10 +20,10 @@ import org.gradle.api.tasks.TaskAction;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
 
@@ -40,8 +40,12 @@ public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
     @OutputDirectory
     public abstract DirectoryProperty getOutputDirectory();
 
+    @OutputDirectory
+    @Optional
+    public abstract DirectoryProperty getPersistentOutputDirectory();
+
     @Input
-    public abstract Property<Integer> getMaxGeneratedTestsPerOperation();
+    public abstract Property<Integer> getMaxOperations();
 
     @Input
     public abstract ListProperty<String> getOperationIncludePatterns();
@@ -56,6 +60,16 @@ public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
     @Optional
     public abstract RegularFileProperty getFixtureMappingsFile();
 
+    /**
+     * A deterministic fingerprint of the DSL {@code fixtureMappings { }} block, set by the plugin.
+     * The DSL specs themselves are not directly fingerprintable Gradle inputs, so this property lets
+     * Gradle detect DSL changes and re-run generation; without it, edits to inline mappings would be
+     * silently ignored by up-to-date checks.
+     */
+    @Input
+    @Optional
+    public abstract Property<String> getFixtureMappingsFingerprint();
+
     @TaskAction
     public void generate() throws IOException {
         CodegenConfig config = new CodegenConfig();
@@ -63,7 +77,10 @@ public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
         config.setBasePackage(getBasePackage().get());
         config.setDgsCodegenPackage(getDgsCodegenPackage().getOrNull());
         config.setOutputDirectory(getOutputDirectory().get().getAsFile().toPath().toAbsolutePath());
-        config.setMaxGeneratedTestsPerOperation(getMaxGeneratedTestsPerOperation().get());
+        if (getPersistentOutputDirectory().isPresent()) {
+            config.setPersistentOutputDirectory(getPersistentOutputDirectory().get().getAsFile().toPath().toAbsolutePath());
+        }
+        config.setMaxOperations(getMaxOperations().get());
         config.setOperationIncludePatterns(getOperationIncludePatterns().getOrElse(List.of()));
         config.setOperationExcludePatterns(getOperationExcludePatterns().getOrElse(List.of()));
         config.setTestStyle(getTestStyle().getOrElse("all"));
@@ -83,21 +100,46 @@ public abstract class GenerateGraphProbeTestsTask extends DefaultTask {
 
         Object extensionObject = getProject().getExtensions().findByName("graphProbeCodegen");
         if (extensionObject instanceof GraphProbeCodegenExtension extension) {
-            for (Map.Entry<String, FixtureMappingSpec> entry : extension.getFixtureMappingsDsl().getMappings().entrySet()) {
-                FixtureMapping mapping = new FixtureMapping();
-                mapping.setSql(entry.getValue().getSql());
-                mapping.setCsvResource(entry.getValue().getCsvResource());
-                mapping.setArguments(new LinkedHashMap<>(entry.getValue().getArguments()));
-                fixtureMappings.put(entry.getKey(), mapping);
-            }
+            // DSL mappings overlay (and override) YAML mappings on a key collision.
+            extension.getFixtureMappingsDsl().getMappings()
+                .forEach((operation, spec) -> fixtureMappings.put(operation, toFixtureMapping(spec)));
         }
 
         config.setFixtureMappings(fixtureMappings);
 
         GenerationResult result = new GraphProbeCodegenEngine().generate(config);
-        getLogger().lifecycle("Generated {} file(s) into {}", result.getGeneratedFiles().size(), config.getOutputDirectory());
+        Path destination = config.getPersistentOutputDirectory() != null
+            ? config.getPersistentOutputDirectory()
+            : config.getOutputDirectory();
+        getLogger().lifecycle("Generated {} file(s) into {}", result.getGeneratedFiles().size(), destination);
         for (Path file : result.getGeneratedFiles()) {
             getLogger().info(" - {}", file);
         }
+        if (!result.getSkippedOperations().isEmpty()) {
+            getLogger().warn("Skipped {} operation(s) beyond maxOperations ({}): {}",
+                result.getSkippedOperations().size(), config.getMaxOperations(), result.getSkippedOperations());
+        }
+    }
+
+    private static FixtureMapping toFixtureMapping(FixtureMappingSpec spec) {
+        FixtureMapping mapping = new FixtureMapping();
+        mapping.setSql(spec.getSql());
+        mapping.setArguments(new LinkedHashMap<>(spec.getArguments()));
+        return mapping;
+    }
+
+    /** Builds a stable, order-independent fingerprint of the DSL fixture mappings for change detection. */
+    static String fingerprint(Map<String, FixtureMappingSpec> mappings) {
+        return mappings.entrySet().stream()
+            .sorted(Map.Entry.comparingByKey())
+            .map(entry -> {
+                FixtureMappingSpec spec = entry.getValue();
+                String arguments = spec.getArguments().entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .map(arg -> arg.getKey() + "=" + arg.getValue())
+                    .collect(Collectors.joining(","));
+                return entry.getKey() + "|" + spec.getSql() + "|" + arguments;
+            })
+            .collect(Collectors.joining(";"));
     }
 }

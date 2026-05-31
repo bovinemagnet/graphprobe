@@ -15,7 +15,7 @@ public class CodegenConfig {
     private Path fixtureMappingsFile;
     private List<String> operationIncludePatterns = new ArrayList<>();
     private List<String> operationExcludePatterns = new ArrayList<>();
-    private int maxGeneratedTestsPerOperation = 200;
+    private int maxOperations = 200;
     private String testStyle = "all";
     private Map<String, FixtureMapping> fixtureMappings = new LinkedHashMap<>();
 
@@ -88,12 +88,18 @@ public class CodegenConfig {
         this.operationExcludePatterns = operationExcludePatterns;
     }
 
-    public int getMaxGeneratedTestsPerOperation() {
-        return maxGeneratedTestsPerOperation;
+    public int getMaxOperations() {
+        return maxOperations;
     }
 
-    public void setMaxGeneratedTestsPerOperation(int maxGeneratedTestsPerOperation) {
-        this.maxGeneratedTestsPerOperation = maxGeneratedTestsPerOperation;
+    /**
+     * Caps the number of query operations for which tests are generated (operations are sorted
+     * by name and the first {@code maxOperations} are kept). Must be at least 1; the default is 200.
+     * When the schema has more matching operations than this limit, the excess are skipped and
+     * reported via {@link GenerationResult#getSkippedOperations()}.
+     */
+    public void setMaxOperations(int maxOperations) {
+        this.maxOperations = maxOperations;
     }
 
     public String getTestStyle() {

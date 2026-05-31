@@ -16,7 +16,7 @@ public class GraphProbeCodegenPlugin implements Plugin<Project> {
         );
 
         extension.getOutputDirectory().convention(project.getLayout().getBuildDirectory().dir("generated/graphprobe-test/java"));
-        extension.getMaxGeneratedTestsPerOperation().convention(200);
+        extension.getMaxOperations().convention(200);
         extension.getTestStyle().convention("all");
 
         project.getTasks().register("generateGraphProbeTests", GenerateGraphProbeTestsTask.class, task -> {
@@ -27,11 +27,14 @@ public class GraphProbeCodegenPlugin implements Plugin<Project> {
             task.getBasePackage().set(extension.getBasePackage());
             task.getDgsCodegenPackage().set(extension.getDgsCodegenPackage());
             task.getOutputDirectory().set(extension.getOutputDirectory());
-            task.getMaxGeneratedTestsPerOperation().set(extension.getMaxGeneratedTestsPerOperation());
+            task.getPersistentOutputDirectory().set(extension.getPersistentOutputDirectory());
+            task.getMaxOperations().set(extension.getMaxOperations());
             task.getOperationIncludePatterns().set(extension.getOperationIncludePatterns());
             task.getOperationExcludePatterns().set(extension.getOperationExcludePatterns());
             task.getTestStyle().set(extension.getTestStyle());
             task.getFixtureMappingsFile().set(extension.getFixtureMappingsFile());
+            task.getFixtureMappingsFingerprint().set(project.provider(() ->
+                GenerateGraphProbeTestsTask.fingerprint(extension.getFixtureMappingsDsl().getMappings())));
         });
 
         project.getPlugins().withType(JavaPlugin.class, ignored -> {

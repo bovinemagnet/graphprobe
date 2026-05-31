@@ -81,8 +81,9 @@ From the GraphProbe repository, run the generator directly:
 ./gradlew :codegen:run --args='--schema /absolute/path/schema.graphqls --base-package com.example.generated.graphprobe --style all'
 ----
 
-The CLI also accepts `--output-dir`, `--include`, `--exclude`, and `--max-tests`.
+The CLI also accepts `--output-dir`, `--include`, `--exclude`, and `--max-operations`.
 If `--output-dir` is omitted, output defaults to `build/generated/graphprobe-test/java` relative to the current working directory.
+`--max-operations` caps how many query operations are covered (default 200); operations beyond the limit are skipped and reported as a warning.
 
 == Runtime configuration
 

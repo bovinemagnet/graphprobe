@@ -5,7 +5,6 @@ import java.util.Map;
 
 public class FixtureMappingSpec {
     private String sql;
-    private String csvResource;
     private final Map<String, String> arguments = new LinkedHashMap<>();
 
     public String getSql() {
@@ -14,14 +13,6 @@ public class FixtureMappingSpec {
 
     public void setSql(String sql) {
         this.sql = sql;
-    }
-
-    public String getCsvResource() {
-        return csvResource;
-    }
-
-    public void setCsvResource(String csvResource) {
-        this.csvResource = csvResource;
     }
 
     public Map<String, String> getArguments() {

@@ -34,7 +34,7 @@ public abstract class GraphProbeCodegenExtension {
 
     public abstract ListProperty<String> getOperationExcludePatterns();
 
-    public abstract Property<Integer> getMaxGeneratedTestsPerOperation();
+    public abstract Property<Integer> getMaxOperations();
 
     public abstract Property<String> getTestStyle();
 

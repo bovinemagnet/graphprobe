@@ -17,8 +17,8 @@ java {
 dependencies {
     implementation project(':framework')
     implementation libs.jackson.databind
-    implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.20.0'
-    implementation 'com.graphql-java:graphql-java:22.0'
+    implementation libs.jackson.dataformat.yaml
+    implementation libs.graphql.java
 
     testImplementation libs.junit.jupiter
     testImplementation libs.assertj.core

@@ -41,10 +41,12 @@ public class GraphProbeCodegenEngine {
         List<Pattern> includes = compile(config.getOperationIncludePatterns());
         List<Pattern> excludes = compile(config.getOperationExcludePatterns());
 
-        List<FieldDefinition> queryFields = queryType.getFieldDefinitions().stream()
+        List<FieldDefinition> matchingFields = queryType.getFieldDefinitions().stream()
             .sorted(Comparator.comparing(FieldDefinition::getName))
             .filter(field -> shouldInclude(field.getName(), includes, excludes))
-            .limit(config.getMaxGeneratedTestsPerOperation())
+            .toList();
+        List<FieldDefinition> queryFields = matchingFields.stream()
+            .limit(config.getMaxOperations())
             .toList();
         Map<String, FieldDefinition> queryFieldsByName = queryFields.stream()
             .collect(Collectors.toMap(FieldDefinition::getName, Function.identity()));
@@ -58,6 +60,10 @@ public class GraphProbeCodegenEngine {
         Map<String, String> sources = sourceGenerator.generate(config, registry, queryFields, queryFieldsByName, schemaHash);
 
         GenerationResult result = new GenerationResult();
+        matchingFields.stream()
+            .skip(queryFields.size())
+            .map(FieldDefinition::getName)
+            .forEach(result.getSkippedOperations()::add);
         for (Map.Entry<String, String> source : sources.entrySet()) {
             Path target = packageDir.resolve(source.getKey());
             write(target, source.getValue());
@@ -87,8 +93,8 @@ public class GraphProbeCodegenEngine {
         if (config.getOutputDirectory() == null && config.getPersistentOutputDirectory() == null) {
             throw new IllegalArgumentException("outputDirectory or persistentOutputDirectory must be provided");
         }
-        if (config.getMaxGeneratedTestsPerOperation() < 1) {
-            throw new IllegalArgumentException("maxGeneratedTestsPerOperation must be >= 1");
+        if (config.getMaxOperations() < 1) {
+            throw new IllegalArgumentException("maxOperations must be >= 1");
         }
     }
 

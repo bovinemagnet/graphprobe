@@ -23,8 +23,10 @@ public class CodegenYamlConfigLoader {
             baseDir = Path.of(".").toAbsolutePath();
         }
         List<Path> schemaPaths = new ArrayList<>();
-        for (String schemaFile : yamlConfig.schemaFiles) {
-            schemaPaths.add(baseDir.resolve(schemaFile).normalize());
+        if (yamlConfig.schemaFiles != null) {
+            for (String schemaFile : yamlConfig.schemaFiles) {
+                schemaPaths.add(baseDir.resolve(schemaFile).normalize());
+            }
         }
         config.setSchemaFiles(schemaPaths);
         config.setBasePackage(yamlConfig.basePackage);
@@ -41,13 +43,15 @@ public class CodegenYamlConfigLoader {
         if (yamlConfig.operationExcludePatterns != null) {
             config.setOperationExcludePatterns(yamlConfig.operationExcludePatterns);
         }
-        if (yamlConfig.maxGeneratedTestsPerOperation != null) {
-            config.setMaxGeneratedTestsPerOperation(yamlConfig.maxGeneratedTestsPerOperation);
+        if (yamlConfig.maxOperations != null) {
+            config.setMaxOperations(yamlConfig.maxOperations);
         }
         if (yamlConfig.testStyle != null) {
             config.setTestStyle(yamlConfig.testStyle);
         }
-        config.setFixtureMappings(yamlConfig.fixtureMappings);
+        if (yamlConfig.fixtureMappings != null) {
+            config.setFixtureMappings(yamlConfig.fixtureMappings);
+        }
         return config;
     }
 
@@ -55,9 +59,10 @@ public class CodegenYamlConfigLoader {
         public List<String> schemaFiles = new ArrayList<>();
         public String basePackage;
         public String dgsCodegenPackage;
+        // note: csvResource on FixtureMapping was removed; YAML keys for it are ignored.
         public String outputDirectory;
         public String persistentOutputDirectory;
-        public Integer maxGeneratedTestsPerOperation;
+        public Integer maxOperations;
         public String testStyle;
         public List<String> operationIncludePatterns = new ArrayList<>();
         public List<String> operationExcludePatterns = new ArrayList<>();
