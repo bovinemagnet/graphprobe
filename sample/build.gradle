@@ -17,6 +17,7 @@
 
 plugins {
     id 'java'
+    id 'com.netflix.dgs.codegen' version '8.0.4'
 }
 
 description = 'Example consumer demonstrating how to use the GraphProbe framework'
@@ -30,12 +31,32 @@ dependencies {
         testImplementation project(':framework')
     }
 
+    // The DGS-generated client code is emitted into the MAIN source set and extends
+    // GraphQLQuery / BaseSubProjectionNode from the codegen shared-core artifact. The
+    // framework re-exports these transitively, but only on the TEST classpath, so the
+    // sample's own generated MAIN sources need shared-core declared directly here.
+    implementation libs.dgs.codegen.shared.core
+
     // JUnit, AssertJ and jqwik (incl. the engine) arrive transitively from the
     // framework's `api` dependencies, so consumers do not re-declare them.
 
     // SLF4J binding so the framework's logging is rendered during the sample tests.
     testRuntimeOnly libs.logback.classic
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Generate a typed GraphQL client (query + projection classes) from the catalog
+// schema. Only the query side is generated (no data types, no mutation client) —
+// the tests build typed queries and assert against JSON strings, so the generated
+// DTOs are unnecessary and keep the classpath minimal.
+generateJava {
+    schemaPaths = ["${projectDir}/src/main/resources/schema/catalog.graphqls"]
+    packageName = 'com.snowedunderproductions.graphprobe.sample.generated'
+    generateClientv2 = true
+    generateDataTypes = false
+    skipEntityQueries = true
+    includeQueries = ['products', 'product']
+    includeMutations = ['__none__']
 }
 
 test {
