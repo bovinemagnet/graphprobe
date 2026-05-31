@@ -10,7 +10,7 @@ public class CodegenConfig {
     private List<Path> schemaFiles = new ArrayList<>();
     private String basePackage;
     private String dgsCodegenPackage;
-    private Path outputDirectory;
+    private Path outputDirectory = Path.of("build/generated/graphprobe-test/java");
     private Path persistentOutputDirectory;
     private Path fixtureMappingsFile;
     private List<String> operationIncludePatterns = new ArrayList<>();

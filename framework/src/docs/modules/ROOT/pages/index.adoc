@@ -12,6 +12,7 @@ No application code ships with it.
 * *Database-driven parameterised tests* via the `@DynamicSource` annotation, backed by a shared HikariCP connection pool and a Caffeine result cache with a five-minute TTL.
 * *Three GraphQL test clients*: a basic OkHttp client (`GraphQLTestClient`) for straightforward queries; a resilient client (`SimpleGraphQLClient`) with concurrency throttling, retry-with-backoff, per-request metrics, and Allure report attachments; and a reactive Spring WebFlux / Netflix DGS executor (`GraphQLTestExecutor`) for reactive pipelines.
 * *Property-based testing and security fuzzing* with jqwik — reusable arbitrary generators for GraphQL scalars, injection and edge-case payloads (SQL, NoSQL, XSS, path traversal), and database-sampled values for realistic property tests.
+* *Schema-driven test generation* from GraphQL SDL, with optional SQL fixture mappings and DGS codegen constants.
 * *Environment-driven configuration* with `.env` file support via dotenv-java; system environment variables take precedence, so CI overrides are straightforward.
 * *Version-conditional test execution* with `@EnabledForVersion`, allowing tests to be gated on a `currentVersion` system property evaluated against semantic version constraints.
 * *Connection-pool health monitoring* and per-test-class request metrics that surface pool statistics and in-flight request counts without any extra instrumentation in consuming projects.
@@ -37,6 +38,9 @@ How `@DynamicSource` works, how to extend `BaseArgumentsProvider`, and how the H
 
 xref:client-tools.adoc[Client test tools]::
 The three available clients, the concurrency throttle, request metrics, deep-link assertions, and pagination helpers.
+
+xref:code-generation.adoc[Code generation]::
+Generate query smoke tests, property tests, and fixture-backed parameterized tests from a GraphQL schema.
 
 xref:property-testing.adoc[Property-based testing]::
 jqwik integration, the `GraphQLArbitraries` and `GraphQLFuzzingArbitraries` factories, database-sampled arbitraries, and composing complex test inputs.

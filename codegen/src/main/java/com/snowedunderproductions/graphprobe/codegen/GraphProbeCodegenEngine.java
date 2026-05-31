@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -50,6 +51,8 @@ public class GraphProbeCodegenEngine {
             .filter(field -> shouldInclude(field.getName(), includes, excludes))
             .limit(config.getMaxGeneratedTestsPerOperation())
             .toList();
+        Map<String, FieldDefinition> queryFieldsByName = queryFields.stream()
+            .collect(Collectors.toMap(FieldDefinition::getName, Function.identity()));
 
         Path baseOutputDir = config.getPersistentOutputDirectory() != null
             ? config.getPersistentOutputDirectory()
@@ -61,12 +64,12 @@ public class GraphProbeCodegenEngine {
         GenerationResult result = new GenerationResult();
 
         Path smoke = packageDir.resolve("GeneratedSchemaSmokeTest.java");
-        write(smoke, generateSmokeTest(config.getBasePackage(), schemaHash, queryFields, registry));
+        write(smoke, generateSmokeTest(config.getBasePackage(), schemaHash, queryFields, registry, config.getDgsCodegenPackage()));
         result.getGeneratedFiles().add(smoke);
 
         if (styleEnabled(config.getTestStyle(), "property")) {
             Path property = packageDir.resolve("GeneratedPropertyTest.java");
-            write(property, generatePropertyTest(config.getBasePackage(), schemaHash, queryFields));
+            write(property, generatePropertyTest(config.getBasePackage(), schemaHash, queryFields, registry));
             result.getGeneratedFiles().add(property);
         }
 
@@ -78,13 +81,14 @@ public class GraphProbeCodegenEngine {
                 String operation = entry.getKey();
                 FixtureMapping mapping = entry.getValue();
                 String providerName = providerName(operation);
+                FieldDefinition field = resolveOperationField(operation, queryFieldsByName);
                 Path providerPath = providersDir.resolve(providerName + ".java");
                 write(providerPath, generateProvider(config.getBasePackage(), schemaHash, providerName, operation, mapping));
                 result.getGeneratedFiles().add(providerPath);
-                fixtureBindings.add(new FixtureTestBinding(operation, providerName, new ArrayList<>(mapping.getArguments().keySet())));
+                fixtureBindings.add(new FixtureTestBinding(operation, providerName, new ArrayList<>(mapping.getArguments().keySet()), field));
             }
             Path fixture = packageDir.resolve("GeneratedFixtureBackedTest.java");
-            write(fixture, generateFixtureTest(config.getBasePackage(), schemaHash, fixtureBindings));
+            write(fixture, generateFixtureTest(config.getBasePackage(), schemaHash, fixtureBindings, registry));
             result.getGeneratedFiles().add(fixture);
         }
 
@@ -153,9 +157,9 @@ public class GraphProbeCodegenEngine {
         return current;
     }
 
-    private String generateSmokeTest(String basePackage, String schemaHash, List<FieldDefinition> operations, TypeDefinitionRegistry registry) {
+    private String generateSmokeTest(String basePackage, String schemaHash, List<FieldDefinition> operations, TypeDefinitionRegistry registry, String dgsCodegenPackage) {
         String methods = operations.stream()
-            .map(op -> smokeMethod(op, registry))
+            .map(op -> smokeMethod(op, registry, dgsCodegenPackage))
             .collect(Collectors.joining("\n\n"));
 
         return "package " + basePackage + ";\n\n"
@@ -169,26 +173,30 @@ public class GraphProbeCodegenEngine {
             + "    private static final SimpleGraphQLClient CLIENT = new SimpleGraphQLClient();\n"
             + "    private static final ObjectMapper MAPPER = new ObjectMapper();\n\n"
             + methods + "\n"
+            + dgsHelper(dgsCodegenPackage)
             + "}\n";
     }
 
-    private String smokeMethod(FieldDefinition operation, TypeDefinitionRegistry registry) {
+    private String smokeMethod(FieldDefinition operation, TypeDefinitionRegistry registry, String dgsCodegenPackage) {
         String methodName = "smoke_" + safeName(operation.getName());
         String query = operationQuery(operation, registry);
+        String responseFieldExpression = dgsCodegenPackage == null || dgsCodegenPackage.isBlank()
+            ? "\"" + javaString(operation.getName()) + "\""
+            : "dgsQueryField(\"" + dgsConstantName(operation.getName()) + "\", \"" + javaString(operation.getName()) + "\")";
         return "    @Test\n"
             + "    void " + methodName + "() throws Exception {\n"
             + "        String query = \"\"\"\n" + indent(query, 8) + "\n        \"\"\";\n"
             + "        String response = CLIENT.executeFullQuery(query);\n"
             + "        JsonNode root = MAPPER.readTree(response);\n"
             + "        assertThat(root.path(\"errors\").isMissingNode() || root.path(\"errors\").isNull() || root.path(\"errors\").isEmpty()).isTrue();\n"
-            + "        assertThat(root.path(\"data\").path(\"" + operation.getName() + "\").isMissingNode()).isFalse();\n"
+            + "        assertThat(root.path(\"data\").path(" + responseFieldExpression + ").isMissingNode()).isFalse();\n"
             + "    }";
     }
 
-    private String generatePropertyTest(String basePackage, String schemaHash, List<FieldDefinition> operations) {
-        FieldDefinition withArg = operations.stream().filter(op -> !op.getInputValueDefinitions().isEmpty()).findFirst().orElse(null);
+    private String generatePropertyTest(String basePackage, String schemaHash, List<FieldDefinition> operations, TypeDefinitionRegistry registry) {
+        PropertyBinding binding = propertyBinding(operations, registry);
         String body;
-        if (withArg == null) {
+        if (binding == null) {
             body = "    @GraphQLProperty(tries = 10)\n"
                 + "    void generatedStringArbitraryIsUsable(@ForAll(\"generatedString\") String value) {\n"
                 + "        assertThat(value).isNotNull();\n"
@@ -198,15 +206,21 @@ public class GraphProbeCodegenEngine {
                 + "        return GraphQLArbitraries.graphqlString();\n"
                 + "    }";
         } else {
-            InputValueDefinition firstArg = withArg.getInputValueDefinitions().get(0);
-            String query = operationQueryWithFuzzValue(withArg.getName(), firstArg.getName());
+            String variableName = safeName(binding.argument().getName());
+            String providerName = "generated" + capitalize(variableName);
+            String queryExpression = javaQueryExpression(
+                binding.operation(),
+                registry,
+                Map.of(binding.argument().getName(), typedLiteralExpression(binding.argument().getType(), registry, variableName))
+            );
+            String arbitraryType = arbitraryJavaType(binding.argument().getType(), registry);
             body = "    @GraphQLProperty(tries = 20)\n"
-                + "    void fuzz_" + safeName(withArg.getName()) + "(@ForAll(\"fuzzPayload\") String value) throws Exception {\n"
-                + "        String safeValue = value.replace(\"\\\\\", \"\\\\\\\\\").replace(\"\\\"\", \"\\\\\\\"\");\n"
-                + "        String query = String.format(\"" + javaString(query) + "\", safeValue);\n"
+                + "    void property_" + safeName(binding.operation().getName()) + "(@ForAll(\"" + providerName + "\") " + arbitraryType + " " + variableName + ") throws Exception {\n"
+                + "        String query = " + queryExpression + ";\n"
                 + "        String response = CLIENT.executeFullQuery(query);\n"
                 + "        assertThat(response).isNotBlank();\n"
-                + "    }";
+                + "    }\n\n"
+                + propertyProvider(providerName, binding.argument(), registry);
         }
 
         return "package " + basePackage + ";\n\n"
@@ -217,15 +231,13 @@ public class GraphProbeCodegenEngine {
             + "import com.snowedunderproductions.graphprobe.jqwik.arbitraries.GraphQLArbitraries;\n"
             + "import com.snowedunderproductions.graphprobe.jqwik.arbitraries.GraphQLFuzzingArbitraries;\n"
             + "import net.jqwik.api.Arbitrary;\n"
+            + "import net.jqwik.api.Arbitraries;\n"
             + "import net.jqwik.api.ForAll;\n"
             + "import net.jqwik.api.Provide;\n\n"
             + "class GeneratedPropertyTest {\n"
             + "    private static final SimpleGraphQLClient CLIENT = new SimpleGraphQLClient();\n\n"
             + body + "\n\n"
-            + "    @Provide\n"
-            + "    Arbitrary<String> fuzzPayload() {\n"
-            + "        return GraphQLFuzzingArbitraries.sqlInjectionPayloads();\n"
-            + "    }\n"
+            + graphQlLiteralHelpers()
             + "}\n";
     }
 
@@ -263,36 +275,41 @@ public class GraphProbeCodegenEngine {
             + "}\n";
     }
 
-    private String generateFixtureTest(String basePackage, String schemaHash, List<FixtureTestBinding> bindings) {
+    private String generateFixtureTest(String basePackage, String schemaHash, List<FixtureTestBinding> bindings, TypeDefinitionRegistry registry) {
         String methods = bindings.stream().map(binding -> {
             String args = binding.arguments.isEmpty()
                 ? "String value"
                 : binding.arguments.stream().map(arg -> "String " + safeName(arg)).collect(Collectors.joining(", "));
 
-            String queryArguments = binding.arguments.isEmpty()
-                ? ""
-                : "(" + binding.arguments.stream().map(arg -> arg + ": \\\"\" + " + safeName(arg) + " + \"\\\"").collect(Collectors.joining(", ")) + ")";
-
             String opField = binding.operation.contains(".") ? binding.operation.substring(binding.operation.indexOf('.') + 1) : binding.operation;
+            Map<String, String> dynamicArguments = binding.arguments.stream()
+                .collect(Collectors.toMap(Function.identity(), arg -> fixtureLiteralExpression(argumentType(binding.field, arg), registry, safeName(arg))));
+            String queryExpression = javaQueryExpression(binding.field, registry, dynamicArguments);
 
             return "    @ParameterizedTest\n"
                 + "    @DynamicSource(argumentsProvider = " + binding.providerName + ".class)\n"
                 + "    void fixture_" + safeName(opField) + "(" + args + ") throws Exception {\n"
-                + "        String query = \"{ " + opField + queryArguments + " }\";\n"
+                + "        String query = " + queryExpression + ";\n"
                 + "        String response = CLIENT.executeFullQuery(query);\n"
                 + "        assertThat(response).isNotBlank();\n"
                 + "    }";
         }).collect(Collectors.joining("\n\n"));
+        String providerImports = bindings.stream()
+            .map(binding -> "import " + basePackage + ".providers." + binding.providerName + ";\n")
+            .distinct()
+            .collect(Collectors.joining());
 
         return "package " + basePackage + ";\n\n"
             + header(schemaHash)
             + "import static org.assertj.core.api.Assertions.assertThat;\n\n"
             + "import com.snowedunderproductions.graphprobe.annotations.DynamicSource;\n"
             + "import com.snowedunderproductions.graphprobe.client.SimpleGraphQLClient;\n"
+            + providerImports
             + "import org.junit.jupiter.params.ParameterizedTest;\n\n"
             + "class GeneratedFixtureBackedTest {\n"
             + "    private static final SimpleGraphQLClient CLIENT = new SimpleGraphQLClient();\n\n"
             + methods + "\n"
+            + graphQlLiteralHelpers()
             + "}\n";
     }
 
@@ -301,10 +318,6 @@ public class GraphProbeCodegenEngine {
         String selection = selectionSet(operation.getType(), registry, 0, new LinkedHashSet<>());
         String field = operation.getName() + args + (selection.isBlank() ? "" : " " + selection);
         return "query Generated_" + operation.getName() + " {\n  " + field + "\n}";
-    }
-
-    private String operationQueryWithFuzzValue(String operationName, String argName) {
-        return "query GeneratedFuzz { " + operationName + "(" + argName + ": \\\"%s\\\") }";
     }
 
     private String argumentLiteral(List<InputValueDefinition> args, TypeDefinitionRegistry registry) {
@@ -358,7 +371,7 @@ public class GraphProbeCodegenEngine {
             return "";
         }
         if (depth >= 2 || visited.contains(name)) {
-            return "{ id }";
+            return "{ __typename }";
         }
         Optional<ObjectTypeDefinition> objectType = registry.getType(name, ObjectTypeDefinition.class);
         if (objectType.isEmpty()) {
@@ -389,7 +402,7 @@ public class GraphProbeCodegenEngine {
         visited.remove(name);
 
         if (fields.isEmpty()) {
-            return "{ id }";
+            return "{ __typename }";
         }
 
         return "{ " + String.join(" ", fields) + " }";
@@ -469,6 +482,215 @@ public class GraphProbeCodegenEngine {
         return operation.replaceAll("[^A-Za-z0-9]", "") + "ArgumentsProvider";
     }
 
+    private String dgsHelper(String dgsCodegenPackage) {
+        if (dgsCodegenPackage == null || dgsCodegenPackage.isBlank()) {
+            return "";
+        }
+        return "\n"
+            + "    private static String dgsQueryField(String constantName, String fallback) {\n"
+            + "        try {\n"
+            + "            Class<?> queryConstants = Class.forName(\"" + javaString(dgsCodegenPackage) + ".DgsConstants$QUERY\");\n"
+            + "            Object value = queryConstants.getField(constantName).get(null);\n"
+            + "            return value instanceof String stringValue ? stringValue : fallback;\n"
+            + "        } catch (ReflectiveOperationException | LinkageError ignored) {\n"
+            + "            return fallback;\n"
+            + "        }\n"
+            + "    }\n";
+    }
+
+    private String dgsConstantName(String fieldName) {
+        StringBuilder result = new StringBuilder();
+        boolean upperNext = true;
+        for (char c : fieldName.toCharArray()) {
+            if (!Character.isLetterOrDigit(c)) {
+                upperNext = true;
+                continue;
+            }
+            if (upperNext) {
+                result.append(Character.toUpperCase(c));
+                upperNext = false;
+            } else {
+                result.append(c);
+            }
+        }
+        return result.isEmpty() ? "Value" : result.toString();
+    }
+
+    private FieldDefinition resolveOperationField(String operation, Map<String, FieldDefinition> queryFieldsByName) {
+        String fieldName = operation.contains(".") ? operation.substring(operation.indexOf('.') + 1) : operation;
+        FieldDefinition field = queryFieldsByName.get(fieldName);
+        if (field == null) {
+            throw new IllegalArgumentException("Fixture mapping references unknown or excluded query operation: " + operation);
+        }
+        return field;
+    }
+
+    private Type<?> argumentType(FieldDefinition field, String argumentName) {
+        return field.getInputValueDefinitions().stream()
+            .filter(argument -> argument.getName().equals(argumentName))
+            .findFirst()
+            .map(InputValueDefinition::getType)
+            .orElseThrow(() -> new IllegalArgumentException(
+                "Fixture mapping references unknown argument '" + argumentName + "' for query operation '" + field.getName() + "'"
+            ));
+    }
+
+    private String javaQueryExpression(FieldDefinition operation, TypeDefinitionRegistry registry, Map<String, String> dynamicArguments) {
+        StringBuilder expression = new StringBuilder("\"");
+        appendJavaString(expression, "{ " + operation.getName());
+        List<InputValueDefinition> args = operation.getInputValueDefinitions();
+        if (args != null && !args.isEmpty()) {
+            appendJavaString(expression, "(");
+            for (int i = 0; i < args.size(); i++) {
+                InputValueDefinition arg = args.get(i);
+                if (i > 0) {
+                    appendJavaString(expression, ", ");
+                }
+                appendJavaString(expression, arg.getName() + ": ");
+                String dynamic = dynamicArguments.get(arg.getName());
+                if (dynamic == null) {
+                    appendJavaString(expression, sampleLiteral(arg.getType(), registry));
+                } else {
+                    expression.append("\" + ").append(dynamic).append(" + \"");
+                }
+            }
+            appendJavaString(expression, ")");
+        }
+        String selection = selectionSet(operation.getType(), registry, 0, new LinkedHashSet<>());
+        if (!selection.isBlank()) {
+            appendJavaString(expression, " " + selection);
+        }
+        appendJavaString(expression, " }");
+        expression.append("\"");
+        return expression.toString();
+    }
+
+    private void appendJavaString(StringBuilder expression, String value) {
+        expression.append(javaString(value));
+    }
+
+    private String fixtureLiteralExpression(Type<?> type, TypeDefinitionRegistry registry, String variableName) {
+        String name = unwrap(type).getName();
+        if (BUILTIN_SCALARS.contains(name)) {
+            return switch (name) {
+                case "Int", "Float", "Boolean" -> "gqlRaw(" + variableName + ")";
+                default -> "gqlString(" + variableName + ")";
+            };
+        }
+        if (registry.getType(name, EnumTypeDefinition.class).isPresent()) {
+            return "gqlRaw(" + variableName + ")";
+        }
+        return "gqlString(" + variableName + ")";
+    }
+
+    private String typedLiteralExpression(Type<?> type, TypeDefinitionRegistry registry, String variableName) {
+        String name = unwrap(type).getName();
+        if (BUILTIN_SCALARS.contains(name)) {
+            return switch (name) {
+                case "Int" -> "gqlInt(" + variableName + ")";
+                case "Float" -> "gqlFloat(" + variableName + ")";
+                case "Boolean" -> "gqlBoolean(" + variableName + ")";
+                default -> "gqlString(" + variableName + ")";
+            };
+        }
+        if (registry.getType(name, EnumTypeDefinition.class).isPresent()) {
+            return "gqlRaw(" + variableName + ")";
+        }
+        return "gqlString(" + variableName + ")";
+    }
+
+    private PropertyBinding propertyBinding(List<FieldDefinition> operations, TypeDefinitionRegistry registry) {
+        for (FieldDefinition operation : operations) {
+            for (InputValueDefinition argument : operation.getInputValueDefinitions()) {
+                if (isSupportedPropertyType(argument.getType(), registry)) {
+                    return new PropertyBinding(operation, argument);
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean isSupportedPropertyType(Type<?> type, TypeDefinitionRegistry registry) {
+        TypeName typeName = unwrap(type);
+        if (typeName == null) {
+            return false;
+        }
+        String name = typeName.getName();
+        return BUILTIN_SCALARS.contains(name) || registry.getType(name, EnumTypeDefinition.class).isPresent();
+    }
+
+    private String arbitraryJavaType(Type<?> type, TypeDefinitionRegistry registry) {
+        String name = unwrap(type).getName();
+        if (registry.getType(name, EnumTypeDefinition.class).isPresent()) {
+            return "String";
+        }
+        return switch (name) {
+            case "Int" -> "Integer";
+            case "Float" -> "Double";
+            case "Boolean" -> "Boolean";
+            default -> "String";
+        };
+    }
+
+    private String propertyProvider(String providerName, InputValueDefinition argument, TypeDefinitionRegistry registry) {
+        boolean nullable = !(argument.getType() instanceof NonNullType);
+        String name = unwrap(argument.getType()).getName();
+        String arbitrary = switch (name) {
+            case "Int" -> "GraphQLArbitraries.graphqlInt()";
+            case "Float" -> "GraphQLArbitraries.graphqlFloat()";
+            case "Boolean" -> "GraphQLArbitraries.graphqlBoolean()";
+            case "ID" -> "GraphQLArbitraries.graphqlId()";
+            case "String" -> "GraphQLFuzzingArbitraries.sqlInjectionPayloads()";
+            default -> {
+                Optional<EnumTypeDefinition> enumType = registry.getType(name, EnumTypeDefinition.class);
+                if (enumType.isPresent()) {
+                    String values = enumType.get().getEnumValueDefinitions().stream()
+                        .map(value -> "\"" + javaString(value.getName()) + "\"")
+                        .collect(Collectors.joining(", "));
+                    yield "Arbitraries.of(" + values + ")";
+                }
+                yield "GraphQLArbitraries.graphqlString()";
+            }
+        };
+        String type = arbitraryJavaType(argument.getType(), registry);
+        if (nullable) {
+            arbitrary = "GraphQLArbitraries.nullable(" + arbitrary + ")";
+        }
+        return "    @Provide\n"
+            + "    Arbitrary<" + type + "> " + providerName + "() {\n"
+            + "        return " + arbitrary + ";\n"
+            + "    }";
+    }
+
+    private String graphQlLiteralHelpers() {
+        return "\n"
+            + "    private static String gqlString(String value) {\n"
+            + "        if (value == null) {\n"
+            + "            return \"null\";\n"
+            + "        }\n"
+            + "        return \"\\\"\" + value.replace(\"\\\\\", \"\\\\\\\\\").replace(\"\\\"\", \"\\\\\\\"\") + \"\\\"\";\n"
+            + "    }\n\n"
+            + "    private static String gqlRaw(String value) {\n"
+            + "        return value == null || value.isBlank() ? \"null\" : value;\n"
+            + "    }\n\n"
+            + "    private static String gqlInt(Integer value) {\n"
+            + "        return value == null ? \"null\" : value.toString();\n"
+            + "    }\n\n"
+            + "    private static String gqlFloat(Double value) {\n"
+            + "        return value == null ? \"null\" : value.toString();\n"
+            + "    }\n\n"
+            + "    private static String gqlBoolean(Boolean value) {\n"
+            + "        return value == null ? \"null\" : value.toString();\n"
+            + "    }\n";
+    }
+
+    private String capitalize(String input) {
+        if (input == null || input.isBlank()) {
+            return "Value";
+        }
+        return Character.toUpperCase(input.charAt(0)) + input.substring(1);
+    }
+
     private String javaString(String input) {
         return input.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
     }
@@ -478,5 +700,7 @@ public class GraphProbeCodegenEngine {
         Files.writeString(path, content, StandardCharsets.UTF_8);
     }
 
-    private record FixtureTestBinding(String operation, String providerName, List<String> arguments) { }
+    private record FixtureTestBinding(String operation, String providerName, List<String> arguments, FieldDefinition field) { }
+
+    private record PropertyBinding(FieldDefinition operation, InputValueDefinition argument) { }
 }

@@ -2,6 +2,9 @@ package com.snowedunderproductions.graphprobe.codegen.gradle;
 
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
+import org.gradle.api.plugins.JavaPlugin;
+import org.gradle.api.tasks.SourceSet;
+import org.gradle.api.tasks.SourceSetContainer;
 
 public class GraphProbeCodegenPlugin implements Plugin<Project> {
     @Override
@@ -29,6 +32,16 @@ public class GraphProbeCodegenPlugin implements Plugin<Project> {
             task.getOperationExcludePatterns().set(extension.getOperationExcludePatterns());
             task.getTestStyle().set(extension.getTestStyle());
             task.getFixtureMappingsFile().set(extension.getFixtureMappingsFile());
+        });
+
+        project.getPlugins().withType(JavaPlugin.class, ignored -> {
+            SourceSetContainer sourceSets = project.getExtensions().getByType(SourceSetContainer.class);
+            sourceSets.named(SourceSet.TEST_SOURCE_SET_NAME, testSourceSet ->
+                testSourceSet.getJava().srcDir(extension.getOutputDirectory())
+            );
+            project.getTasks().named(JavaPlugin.COMPILE_TEST_JAVA_TASK_NAME).configure(task ->
+                task.dependsOn(project.getTasks().named("generateGraphProbeTests"))
+            );
         });
     }
 }

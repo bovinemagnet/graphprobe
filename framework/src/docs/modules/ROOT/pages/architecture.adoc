@@ -5,9 +5,13 @@ GraphProbe is organised as a set of collaborating layers, each with a clearly sc
 Test code at the top delegates to JUnit 5 extensions and annotations, which in turn drive the client, database, and property-testing layers; all of those ultimately depend on a shared configuration layer and reach out to external systems at the bottom.
 The `DatabaseConnectionManager` singleton is the architectural lynchpin: it owns the single HikariCP pool shared across every test class and every arguments provider in a test run.
 
+The schema-driven code generator lives in the separate `codegen` module.
+It is a build-time tool that emits test sources using the runtime framework APIs, so GraphQL parsing, templating, and Gradle plugin dependencies do not expand the published runtime library.
+
 == Design principles
 
 * The framework is a reusable *library*, not an application; all code is domain-agnostic and carries no business logic.
+* Code generation is build-time only; generated tests depend on the framework, but the framework does not depend on the generator.
 * Configuration is environment-driven — no hardcoded URLs and no constants class.
   Every tunable value is read from a `.env` file or a system environment variable at runtime.
 * The HikariCP connection pool is a thread-safe singleton so that tests running in parallel share one pool rather than each creating their own.
@@ -78,6 +82,15 @@ The extension layer integrates the framework with the JUnit 5 lifecycle without 
 `EnabledForVersionCondition` implements the `@EnabledForVersion` annotation, evaluating semantic version constraints against the `currentVersion` system property to skip tests that do not apply to the version under test.
 
 See xref:test-lifecycle.adoc[] for the extension registration mechanism and lifecycle event sequence.
+
+=== Code generation module
+
+The `codegen` module parses GraphQL SDL and writes generated Java test sources.
+It exposes a Gradle plugin task (`generateGraphProbeTests`) and a CLI entry point.
+Generated tests use `SimpleGraphQLClient` by default, optional generated `BaseArgumentsProvider` subclasses for SQL fixtures, and jqwik arbitraries for supported property tests.
+
+Because the generator runs at build time, it is intentionally outside the runtime package tree shown below.
+See xref:code-generation.adoc[] for configuration and usage.
 
 == Package structure
 

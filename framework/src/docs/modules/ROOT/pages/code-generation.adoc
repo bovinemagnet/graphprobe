@@ -1,0 +1,168 @@
+= Code generation
+:description: Generate GraphProbe JUnit 5 query tests from GraphQL schemas, optional database fixture mappings, and optional DGS codegen constants.
+
+GraphProbe includes a `codegen` module that generates Java test sources from a GraphQL schema.
+The generated suite uses the runtime library APIs, especially `SimpleGraphQLClient`, `@DynamicSource`, `BaseArgumentsProvider`, and jqwik arbitraries.
+
+Version 1 generates query tests only.
+Mutations and subscriptions are parsed for schema awareness but no tests are generated for them.
+
+== What gets generated
+
+Generated files are written to `build/generated/graphprobe-test/java` by default and include:
+
+* `GeneratedSchemaSmokeTest.java` — one smoke test per selected query field.
+* `GeneratedPropertyTest.java` — property-based tests for supported query arguments.
+* `GeneratedFixtureBackedTest.java` — parameterised tests when fixture mappings are configured.
+* `providers/*ArgumentsProvider.java` — generated `BaseArgumentsProvider` subclasses for mapped SQL fixtures.
+
+The Gradle plugin adds the generated directory to the `test` source set and makes `compileTestJava` depend on `generateGraphProbeTests`.
+
+== Gradle plugin usage
+
+Until remote publishing is configured, use the plugin from an included GraphProbe build:
+
+[source,gradle]
+----
+// settings.gradle in the consuming project
+pluginManagement {
+    includeBuild("../graphprobe")
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+----
+
+Apply the plugin and configure the schema:
+
+[source,gradle]
+----
+plugins {
+    id "java"
+    id "com.snowedunderproductions.graphprobe.codegen"
+}
+
+dependencies {
+    testImplementation "com.snowedunderproductions:graphprobe:0.0.1-SNAPSHOT"
+    testRuntimeOnly "ch.qos.logback:logback-classic:1.5.12"
+}
+
+graphProbeCodegen {
+    schemaFiles.from("src/main/resources/schema/schema.graphqls")
+    basePackage = "com.example.generated.graphprobe"
+    testStyle = "all"
+}
+----
+
+Run generation and tests:
+
+[source,bash]
+----
+./gradlew generateGraphProbeTests
+./gradlew test
+----
+
+`testStyle` can be `smoke`, `property`, `fixture`, or `all`.
+
+== CLI usage
+
+From the GraphProbe repository, run the generator directly:
+
+[source,bash]
+----
+./gradlew :codegen:run --args='--schema /absolute/path/schema.graphqls --base-package com.example.generated.graphprobe --style all'
+----
+
+The CLI also accepts `--output-dir`, `--include`, `--exclude`, and `--max-tests`.
+If `--output-dir` is omitted, output defaults to `build/generated/graphprobe-test/java` relative to the current working directory.
+
+== Runtime configuration
+
+Generated tests use `SimpleGraphQLClient`, so the endpoint and authentication are resolved at runtime from environment variables.
+At minimum, set:
+
+[source,properties]
+----
+GRAPHQL_URL=https://api.example.com/graphql
+AUTH_HEADER_VALUE=Bearer <token>
+----
+
+For retry and timeout tuning, see xref:client-tools.adoc[] and xref:environment-variables.adoc[].
+
+== Fixture mappings
+
+Fixture mappings connect query arguments to SQL columns.
+They are opt in; GraphProbe does not guess database tables from GraphQL field names.
+
+Gradle DSL example:
+
+[source,gradle]
+----
+graphProbeCodegen {
+    schemaFiles.from("src/main/resources/schema/schema.graphqls")
+    basePackage = "com.example.generated.graphprobe"
+    testStyle = "all"
+
+    fixtureMappings {
+        operation("Query.user") {
+            sql = "SELECT id FROM users WHERE active = true LIMIT 50"
+            argument("id", "id")
+        }
+    }
+}
+----
+
+YAML example:
+
+[source,yaml]
+----
+schemaFiles:
+  - src/main/resources/schema/schema.graphqls
+basePackage: com.example.generated.graphprobe
+testStyle: all
+fixtureMappings:
+  Query.user:
+    sql: SELECT id FROM users WHERE active = true LIMIT 50
+    arguments:
+      id: id
+----
+
+Reference the YAML file from Gradle:
+
+[source,gradle]
+----
+graphProbeCodegen {
+    fixtureMappingsFile = file("src/test/resources/graphprobe-fixtures.yml")
+}
+----
+
+Generated providers extend `BaseArgumentsProvider`, so database settings still come from the standard `POSTGRES_URL`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` variables.
+
+== DGS codegen integration
+
+If your project already runs Netflix DGS codegen, set the generated package:
+
+[source,gradle]
+----
+graphProbeCodegen {
+    dgsCodegenPackage = "com.example.generated.graphql"
+}
+----
+
+Generated smoke tests look for `DgsConstants$QUERY` at runtime and fall back to schema field names when the class or constant is unavailable.
+This keeps schema-only generation usable while still allowing DGS-generated constants to protect response-path assertions when present.
+
+== Query selection behavior
+
+For object return types, the generator creates bounded selection sets from scalar and enum leaf fields.
+Preferred fields such as `id`, `name`, `status`, `title`, and `code` are selected first when present.
+Recursive selections are capped to avoid infinite queries; when no scalar leaf is available, the generator uses `__typename`.
+
+== Limits and safety
+
+* Query tests only in version 1.
+* Mutation generation is intentionally deferred because mutations can have side effects.
+* Persistent output under `src/test/java` should be opt in; the default generated directory is safer for regeneration.
+* Secrets are never written to generated source. Use environment variables.
+* Fixture SQL should include a suitable `LIMIT` to avoid creating very large parameterized suites.

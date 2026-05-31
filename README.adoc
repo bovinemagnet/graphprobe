@@ -25,6 +25,7 @@ The full documentation is an Antora site under `framework/src/docs`. The pages a
 * link:framework/src/docs/modules/ROOT/pages/architecture.adoc[Architecture] — design principles, package structure, and the responsibility of each layer.
 * link:framework/src/docs/modules/ROOT/pages/database-providers.adoc[Database test providers] — `@DynamicSource`, `BaseArgumentsProvider`, connection pooling and caching.
 * link:framework/src/docs/modules/ROOT/pages/client-tools.adoc[Client test tools] — the GraphQL clients, response helpers, throttling and metrics.
+* link:framework/src/docs/modules/ROOT/pages/code-generation.adoc[Code generation] — generate query tests from GraphQL schemas, fixture mappings, and DGS codegen constants.
 * link:framework/src/docs/modules/ROOT/pages/property-testing.adoc[Property-based testing] — jqwik arbitraries, fuzzing payloads, and the `@DynamicSource` bridge.
 * link:framework/src/docs/modules/ROOT/pages/test-lifecycle.adoc[Test lifecycle] — pool initialisation, monitoring, and JUnit extensions.
 * link:framework/src/docs/modules/ROOT/pages/environment-variables.adoc[Environment variables] — the complete configuration reference.
@@ -132,9 +133,9 @@ GraphProbe now ships a dedicated `:codegen` module that can generate JUnit 5 tes
 [source,bash]
 ----
 # CLI mode
-./gradlew :codegen:run --args='--schema /absolute/path/schema.graphqls --base-package com.example.generated.graphprobe --output-dir build/generated/graphprobe-test/java --style all'
+./gradlew :codegen:run --args='--schema /absolute/path/schema.graphqls --base-package com.example.generated.graphprobe --style all'
 
-# Gradle task mode
+# Gradle task mode, after applying the codegen plugin in a consuming build
 ./gradlew generateGraphProbeTests
 ----
 
@@ -162,6 +163,8 @@ graphProbeCodegen {
     }
 }
 ----
+
+See the link:framework/src/docs/modules/ROOT/pages/code-generation.adoc[code generation documentation] for plugin setup, generated source wiring, DGS codegen integration, and limitations.
 
 == Environment configuration
 

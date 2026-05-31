@@ -139,6 +139,34 @@ This means the database is queried at most once per `getCacheKey()` value, regar
 
 For the full API, CSV fallback, and pool configuration, see xref:database-providers.adoc[Database test providers].
 
+== Generate tests from a schema
+
+If you want GraphProbe to create a starting suite from your GraphQL schema, use the `codegen` module.
+The generator emits query smoke tests, property-based tests, and optional fixture-backed parameterized tests that use `SimpleGraphQLClient` and the existing database provider APIs.
+
+[source,gradle]
+----
+plugins {
+    id "java"
+    id "com.snowedunderproductions.graphprobe.codegen"
+}
+
+graphProbeCodegen {
+    schemaFiles.from("src/main/resources/schema/schema.graphqls")
+    basePackage = "com.example.generated.graphprobe"
+    testStyle = "all"
+}
+----
+
+[source,bash]
+----
+./gradlew generateGraphProbeTests
+./gradlew test
+----
+
+Generated sources default to `build/generated/graphprobe-test/java`, and the plugin adds that directory to the `test` source set.
+See xref:code-generation.adoc[Code generation] for fixture mappings, CLI usage, DGS codegen integration, and current limitations.
+
 == Build the documentation
 
 This documentation site is built with Antora.
@@ -146,5 +174,5 @@ To regenerate the site locally, run:
 
 [source,bash]
 ----
-gradle21w antora
+./gradlew antora
 ----
