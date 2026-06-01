@@ -8,6 +8,9 @@ pluginManagement {
     includeBuild('codegen') {
         name = 'graphprobe-codegen-plugin'
     }
+    includeBuild('allure-gradle') {
+        name = 'graphprobe-allure-plugin'
+    }
     repositories {
         gradlePluginPortal()
         mavenCentral()
@@ -16,4 +19,4 @@ pluginManagement {
 
 rootProject.name = 'graphprobe'
 
-include('framework', 'sample', 'sample-codegen', 'codegen')
+include('framework', 'sample', 'sample-codegen', 'codegen', 'allure-gradle')

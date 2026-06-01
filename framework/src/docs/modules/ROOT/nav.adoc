@@ -4,6 +4,7 @@
 * xref:database-providers.adoc[Database Test Providers]
 * xref:client-tools.adoc[Client Test Tools]
 * xref:code-generation.adoc[Code Generation]
+* xref:allure-accumulation.adoc[Allure Result Accumulation]
 * xref:error-and-version-gating.adoc[Error Paths & Version Gating]
 * xref:property-testing.adoc[Property-Based Testing]
 * xref:test-lifecycle.adoc[Test Lifecycle]

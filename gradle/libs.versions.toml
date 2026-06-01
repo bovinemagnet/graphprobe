@@ -30,6 +30,7 @@ slf4j = "2.0.9"
 logback = "1.5.12"
 dotenv = "3.2.0"
 allure = "2.33.0"
+allure-gradle-plugin = "3.1.0"
 
 [libraries]
 # Spring Framework
@@ -74,6 +75,10 @@ logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "lo
 
 # Reporting (Allure API for @Step/attachments/metrics instrumentation)
 allure-java-commons = { module = "io.qameta.allure:allure-java-commons", version.ref = "allure" }
+# Allure Gradle plugin implementation jar (behind the `io.qameta.allure` aggregate id).
+# On the graphprobe-allure plugin's classpath so it can apply the Allure plugin for
+# consumers and reference the typed AllureReport task (resultsDirs) for multi-run merge.
+allure-gradle-plugin = { module = "io.qameta.allure.gradle.allure:allure-plugin", version.ref = "allure-gradle-plugin" }
 
 [bundles]
 # Testing Core

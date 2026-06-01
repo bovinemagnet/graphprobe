@@ -1,0 +1,45 @@
+plugins {
+    id 'java-library'
+    id 'java-gradle-plugin'
+}
+
+description = 'GraphProbe Allure result accumulation Gradle plugin'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+dependencies {
+    // The Allure Gradle plugin implementation jar — lets this plugin apply
+    // `io.qameta.allure` for consumers and reference the typed AllureReport task
+    // (resultsDirs) for the native multi-run merge.
+    implementation libs.allure.gradle.plugin
+
+    testImplementation libs.junit.jupiter
+    testImplementation libs.assertj.core
+    testImplementation gradleTestKit()
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+gradlePlugin {
+    plugins {
+        graphProbeAllure {
+            id = 'com.snowedunderproductions.graphprobe.allure'
+            implementationClass = 'com.snowedunderproductions.graphprobe.allure.gradle.GraphProbeAllurePlugin'
+        }
+    }
+}
+
+test {
+    useJUnitPlatform()
+    // Propagate the opt-in flag to the forked test worker so the (network-using)
+    // functional tests run when requested: -Dgraphprobe.functional=true.
+    def functional = System.getProperty('graphprobe.functional')
+    if (functional != null) {
+        systemProperty 'graphprobe.functional', functional
+    }
+}

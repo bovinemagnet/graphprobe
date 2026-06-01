@@ -1,0 +1,155 @@
+= Allure result accumulation
+:description: Accumulate Allure test results across multiple runs and produce a merged trend report with the graphprobe.allure Gradle plugin.
+
+GraphProbe includes an `allure-gradle` module that solves a fundamental problem with Allure reports on Gradle projects: results from previous runs are silently deleted before each new run, making it impossible to build a trend graph.
+The plugin id is `com.snowedunderproductions.graphprobe.allure`.
+It keeps a durable archive outside `build/` and provides dedicated tasks for accumulating runs and generating a merged report.
+
+== Why results vanish
+
+The `io.qameta.allure` Gradle plugin registers `build/allure-results` as an *output* of the `test` task.
+Gradle's incremental build and the `cleanTest` task therefore treat that directory as owned output and delete it before the next run writes its results.
+
+Running `./gradlew cleanTest test` — or any invocation that includes `cleanTest` — wipes the previous run's results before the next run writes, so a report generated afterwards only ever shows the latest run.
+No history, no trend, no retry tracking across runs.
+
+== Applying the plugin
+
+Applying `com.snowedunderproductions.graphprobe.allure` also applies `io.qameta.allure` for you, so the `test` task emits `build/allure-results` and the standard `allureReport` task is available.
+Consumers apply a single plugin:
+
+[source,gradle]
+----
+plugins {
+    id 'java'
+    id 'com.snowedunderproductions.graphprobe.allure'
+}
+----
+
+Projects that build against the in-repo plugin wire it as a composite build via `includeBuild` in `settings.gradle`, mirroring the approach described for `xref:code-generation.adoc[Code Generation]`.
+External consumers resolve the plugin once graphprobe is published to a plugin repository.
+
+== Durable archive layout
+
+The plugin maintains an archive directory outside `build/` so that `clean` and `cleanTest` never touch it:
+
+----
+allure-archive/
+  runs/<yyyyMMdd-HHmmss>/   <1>
+  history/                  <2>
+----
+<1> Raw results for one completed run. The `history/` sub-directory from `build/allure-results` is excluded here; history is kept separately.
+<2> Rolling trend history persisted across runs and seeded into each report generation.
+
+[TIP]
+====
+Add `allure-archive/` to your `.gitignore`.
+Committing raw Allure JSON and history binaries is rarely desirable; if you do want to track history in version control, commit only the `allure-archive/history/` sub-directory.
+====
+
+== Tasks
+
+The plugin registers the following tasks.
+
+=== Primary tasks
+
+[cols="1,3", options="header"]
+|===
+| Task | Description
+
+| `testAccumulate`
+| Wipes `build/allure-results`, executes the full test suite fresh, then archives that run's results to `allure-archive/runs/<timestamp>/`.
+Archiving occurs *even if tests fail*, so a failing run is still captured for trend analysis.
+
+| `allureReportAll`
+| Generates one Allure report that merges *all* archived runs (or a `-Pruns=ts1,ts2` subset).
+The resulting report includes a Trend graph across runs; tests are grouped by `historyId` so the same test appearing in multiple runs shows multiple executions and retries.
+Trend history is persisted in `allure-archive/history/`.
+|===
+
+=== Supporting tasks
+
+These tasks are wired automatically as dependencies of the primary tasks.
+They are public so you can invoke them directly if needed, but normal usage only requires the primary tasks.
+
+[cols="1,3", options="header"]
+|===
+| Task | Description
+
+| `archiveAllureResults`
+| Copies `build/allure-results` into the current timestamped archive folder (`history/` excluded).
+
+| `cleanAllureRawResults`
+| Deletes `build/allure-results` before an accumulating run to ensure a clean slate.
+
+| `seedAllureHistory`
+| Copies the persisted `allure-archive/history/` into `build/allure-results/history/` before report generation so Allure can compute trends.
+
+| `persistAllureHistory`
+| Copies the generated report's `history/` directory back to `allure-archive/history/` after report generation so it is available for the next run.
+|===
+
+[NOTE]
+====
+Archiving is triggered only when you invoke `testAccumulate`.
+Running `./gradlew test` or `./gradlew allureReport` directly is unchanged: `test` runs the suite normally (no archive), and `allureReport` reports only the latest `build/allure-results`.
+The archive-on-failure behaviour and task gating are implemented in a config-cache-safe way: the decision is made from the requested task names at configuration time, not by querying the task graph at execution time.
+====
+
+== Configuration
+
+The plugin exposes an optional `graphProbeAllure` extension with three properties, all of which have sensible defaults:
+
+[source,gradle]
+----
+graphProbeAllure {
+    archiveDirectory = layout.projectDirectory.dir('allure-archive')  // <1>
+    resultsDirectory = layout.buildDirectory.dir('allure-results')    // <2>
+    timestampPattern = 'yyyyMMdd-HHmmss'                              // <3>
+}
+----
+<1> Root of the durable archive. Must be outside `build/` to survive `clean`.
+<2> The directory the `test` task writes Allure results to. Change this only if you have overridden the Allure plugin's default.
+<3> `java.time.format.DateTimeFormatter` pattern used to name run directories.
+
+== Usage
+
+A typical accumulation workflow looks like this:
+
+[source,bash]
+----
+./gradlew testAccumulate         # run 1 -> allure-archive/runs/<ts1>/
+./gradlew testAccumulate         # run 2 -> allure-archive/runs/<ts2>/
+./gradlew allureReportAll        # merged report with trend across both runs
+----
+
+To generate a report from a specific subset of runs, pass their timestamps with the `-Pruns` property:
+
+[source,bash]
+----
+./gradlew allureReportAll -Pruns=20260601-101500,20260601-104500
+----
+
+The merged report is written to:
+
+----
+build/reports/allure-report/allureReport/index.html
+----
+
+[IMPORTANT]
+====
+Two `testAccumulate` invocations within the same second produce the same timestamp and would collide on the archive folder name.
+The plugin detects this and appends a numeric suffix to keep the folders distinct (for example `20260601-103000_1`).
+This is acceptable for manual use; automated pipelines that invoke `testAccumulate` in rapid succession should not be affected in practice.
+====
+
+[TIP]
+====
+Trend continuity across reports is maintained automatically.
+`seedAllureHistory` seeds the persisted `allure-archive/history/` into `build/allure-results/history/` before Allure generates the report, and `persistAllureHistory` saves the new history back to `allure-archive/history/` afterwards.
+Both tasks are wired as dependencies of `allureReportAll` — no manual intervention is required.
+====
+
+== Related tooling
+
+For code generation from GraphQL schemas, see xref:code-generation.adoc[].
